@@ -1,0 +1,209 @@
+# Lingmo Forge Desktop Full Preset
+# 完整桌面环境构建 - 包含所有功能特性
+
+[arch]
+default = "amd64"
+supported = ["amd64", "arm64"]
+
+[suite]
+default = "bookworm"
+supported = ["bookworm", "trixie"]
+
+[platform]
+name = "debian"
+mirror = "http://deb.debian.org/debian"
+components = ["main", "contrib", "non-free", "non-free-firmware"]
+
+[image]
+engine = "livebuild"
+iso_name = "lingmo-desktop-{version}-{arch}.iso"
+volume_id = "Lingmo Desktop {version}"
+
+[output]
+directory = "./output/desktop"
+artifacts = ["iso", "manifest", "checksums", "buildinfo", "source-archive"]
+
+[workspace]
+directory = "./workspace/desktop"
+cleanup_on_success = false
+cleanup_on_failure = false
+
+[features]
+enabled = ["desktop", "live", "installer"]
+available = ["desktop", "live", "installer", "secureboot"]
+
+[features.desktop]
+environment = "gnome"
+environments_available = ["gnome", "kde", "xfce", "mate", "cinnamon"]
+
+[features.live]
+persistence_support = true
+boot_menu_timeout = 15
+custom_boot_splash = true
+
+[features.installer]
+type = "calamares"
+include_oem_config = false
+
+[bootstrap]
+variant = "standard"  # 标准变体，包含更多工具
+include_packages = [
+    "apt-utils",
+    "ca-certificates",
+    "gnupg",
+    "wget",
+    "curl",
+    "sudo",
+    "policykit-1",
+]
+
+exclude_packages = []
+
+[packages]
+base = [
+    "linux-image-amd64",
+    "initramfs-tools",
+    "grub-efi-amd64",
+    "grub-pc",
+    "firmware-linux",
+    "firmware-linux-free",
+    "firmware-linux-nonfree",
+    "firmware-misc-nonfree",
+]
+
+desktop_common = [
+    "xorg",
+    "fonts-dejavu-core",
+    "fonts-dejavu-extra",
+    "fonts-liberation2",
+    "fonts-noto-cjk",
+    "libgl1-mesa-dri",
+    "mesa-utils",
+    "mesa-vulkan-drivers",
+    "x11-xserver-utils",
+    "xterm",
+    "gvfs",
+    "network-manager-gnome",
+    "pulseaudio",
+    "pavucontrol",
+    "gnome-terminal-nautilus",
+    "file-roller",
+    "gedit",
+    "eog",
+    "evince",
+    "firefox-esr",
+    "thunderbird",
+]
+
+gnome_specific = [
+    "gnome-core",
+    "gnome-shell",
+    "gnome-settings-daemon",
+    "gdm3",
+    "gnome-control-center",
+    "nautilus",
+    "gnome-software",
+    "gnome-tweaks",
+]
+
+kde_specific = [
+    "kde-full",
+    "sddm",
+    "systemsettings",
+]
+
+xfce_specific = [
+    "xfce4",
+    "xfce4-goodies",
+    "xfce4-terminal",
+    "lightdm",
+    "lightdm-gtk-greeter",
+]
+
+live_system = [
+    "live-boot",
+    "live-config",
+    "live-config-systemd",
+    "squashfs-tools",
+    "xorriso",
+    "isolinux",
+    "syslinux-common",
+    "syslinux-utils",
+]
+
+installer_packages = [
+    "calamares",
+    "calamares-settings-debian",
+]
+
+development_tools = [
+    "git",
+    "vim",
+    "nano",
+    "htop",
+    "tree",
+    "jq",
+    "curl",
+    "wget",
+]
+
+multimedia = [
+    "vlc",
+    "gimp",
+    "inkscape",
+]
+
+office_suite = [
+    "libreoffice",
+    "libreoffice-l10n-zh-cn",
+]
+
+[overlay]
+directories = ["filesystem", "hooks", "branding", "wallpapers"]
+auto_discover = true
+
+[overlay.hooks]
+execution_order = "alphabetical"
+fail_on_error = false
+timeout_seconds = 600
+
+[metadata]
+vendor = "Lingmo Project"
+maintainer = "Lingmo Desktop Team <desktop@lingmo.org>"
+license = "GPL-3.0-or-later"
+homepage = "https://www.lingmo.org/desktop"
+build_type = "desktop-full"
+
+[metadata.versioning]
+scheme = "semver"
+template = "{major}.{minor}.{patch}-desktop.{suite}.{arch}"
+
+[validation]
+require_checksums = true
+require_manifest = true
+minimum_iso_size_mb = 2000
+maximum_iso_size_mb = 8192
+
+[telemetry]
+enable_logging = true
+log_level = "info"
+log_format = "json"
+save_build_logs = true
+log_retention_days = 90
+
+[caching]
+enable_package_cache = true
+cache_directory = "./workspace/cache"
+max_cache_size_gb = 25
+cache_ttl_hours = 336
+
+[network]
+retry_attempts = 3
+retry_delay_seconds = 5
+download_timeout_minutes = 45
+parallel_downloads = 6
+
+[security]
+verify_gpg_signatures = true
+allow_insecure_repos = false
+enforce_https = true

@@ -1,0 +1,86 @@
+# Lingmo Forge Nightly Build Preset
+# 每日构建预设 - 用于 CI/CD 自动化测试
+
+[arch]
+default = "amd64"
+supported = ["amd64", "arm64"]
+
+[suite]
+default = "sid"  # 使用不稳定版进行测试
+supported = ["bookworm", "trixie", "sid"]
+
+[platform]
+name = "debian"
+mirror = "http://deb.debian.org/debian"
+components = ["main", "contrib", "non-free"]
+
+[image]
+engine = "livebuild"
+iso_name = "lingmo-nightly-{timestamp}.iso"
+volume_id = "Lingmo Nightly {date}"
+
+[output]
+directory = "./output/nightly"
+artifacts = ["iso", "manifest", "checksums", "buildinfo", "logs"]
+
+[workspace]
+directory = "./workspace/nightly"
+cleanup_on_success = true
+cleanup_on_failure = false  # 失败时保留用于调试
+
+[features]
+enabled = ["live"]
+available = ["desktop", "live", "installer", "secureboot"]
+
+[bootstrap]
+variant = "minbase"
+include_packages = [
+    "apt-utils",
+    "ca-certificates",
+]
+
+exclude_packages = []
+
+[packages]
+base = [
+    "linux-image-amd64",
+    "initramfs-tools",
+    "grub-efi-amd64",
+]
+
+live_system = [
+    "live-boot",
+    "live-config",
+    "squashfs-tools",
+    "xorriso",
+]
+
+[overlay]
+directories = ["filesystem", "hooks"]
+auto_discover = true
+
+[metadata]
+vendor = "Lingmo Project"
+maintainer = "CI System <ci@lingmo.org>"
+build_type = "nightly"
+
+[validation]
+require_checksums = true
+require_manifest = true
+
+[telemetry]
+enable_logging = true
+log_level = "debug"
+log_format = "json"
+save_build_logs = true
+
+[caching]
+enable_package_cache = true
+cache_directory = "./workspace/cache"
+max_cache_size_gb = 20
+
+[network]
+retry_attempts = 5
+retry_delay_seconds = 10
+download_timeout_minutes = 60
+parallel_downloads = 8

@@ -1,0 +1,87 @@
+# Lingmo Forge Minimal Build Preset
+# 最小化构建 - 仅包含基础系统
+
+[arch]
+default = "amd64"
+supported = ["amd64", "arm64", "i386"]
+
+[suite]
+default = "bookworm"
+supported = ["bookworm", "bullseye"]
+
+[platform]
+name = "debian"
+mirror = "http://deb.debian.org/debian"
+components = ["main"]
+
+[image]
+engine = "livebuild"
+iso_name = "lingmo-minimal-{arch}.iso"
+volume_id = "Lingmo Minimal"
+
+[output]
+directory = "./output/minimal"
+artifacts = ["iso", "rootfs", "manifest", "checksums"]
+
+[workspace]
+directory = "./workspace/minimal"
+cleanup_on_success = false
+cleanup_on_failure = true
+
+[features]
+enabled = []
+available = []  # 最小化构建不启用额外功能
+
+[bootstrap]
+variant = "minbase"
+include_packages = []
+exclude_packages = [
+    "dpkg-dev",
+    "gcc",
+    "g++",
+    "make",
+    "perl",
+    "doc-base",
+    "man-db",
+    "manpages",
+    "apt-utils",
+]
+
+[packages]
+base = [
+    "linux-image-amd64",
+    "initramfs-tools",
+    "grub-pc",
+    "grub-efi-amd64",
+]
+
+[overlay]
+directories = []
+auto_discover = false
+
+[metadata]
+vendor = "Lingmo Project"
+maintainer = "Lingmo Build System <build@lingmo.org>"
+build_type = "minimal"
+
+[validation]
+require_checksums = true
+require_manifest = true
+minimum_iso_size_mb = 100
+maximum_iso_size_mb = 500
+
+[telemetry]
+enable_logging = true
+log_level = "warn"
+save_build_logs = false
+
+[caching]
+enable_package_cache = true
+cache_directory = "./workspace/cache"
+max_cache_size_gb = 5
+
+[network]
+retry_attempts = 3
+retry_delay_seconds = 5
+download_timeout_minutes = 15
+parallel_downloads = 2

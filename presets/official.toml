@@ -1,0 +1,155 @@
+# Lingmo Forge Official Preset Configuration
+# 官方预设 - 用于标准 ISO 构建
+
+[arch]
+default = "amd64"
+supported = ["amd64", "arm64", "i386"]
+
+[suite]
+default = "bookworm"
+supported = ["bookworm", "bullseye", "trixie", "sid"]
+
+[platform]
+name = "debian"
+mirror = "http://deb.debian.org/debian"
+components = ["main", "contrib", "non-free"]
+security_mirror = "http://security.debian.org/debian-security"
+
+[image]
+engine = "livebuild"
+iso_name = "lingmo-live-amd64.iso"
+volume_id = "Lingmo Live AMD64"
+
+[output]
+directory = "./output"
+artifacts = ["iso", "manifest", "checksums", "buildinfo"]
+
+[workspace]
+directory = "./workspace"
+cleanup_on_success = false
+cleanup_on_failure = true
+
+[features]
+# 默认启用的功能特性
+enabled = []
+available = ["desktop", "live", "installer", "secureboot"]
+
+[features.desktop]
+# 桌面环境选项
+environment = "gnome"  # gnome, kde, xfce
+environments_available = ["gnome", "kde", "xfce"]
+
+[features.live]
+# Live 系统配置
+persistence_support = true
+boot_menu_timeout = 10
+
+[features.installer]
+# 安装程序配置
+type = "calamares"  # calamares, ubiquity
+
+[bootstrap]
+variant = "minbase"
+include_packages = [
+    "apt-utils",
+    "ca-certificates",
+    "gnupg",
+]
+
+exclude_packages = [
+    "dpkg-dev",
+    "gcc",
+    "g++",
+    "make",
+    "perl",
+]
+
+[packages]
+# 基础系统包列表
+base = [
+    "linux-image-amd64",
+    "initramfs-tools",
+    "grub-efi-amd64",
+    "grub-pc",
+    "firmware-linux",
+    "firmware-linux-free",
+    "firmware-linux-nonfree",
+]
+
+desktop_common = [
+    "xorg",
+    "fonts-dejavu-core",
+    "fonts-liberation2",
+    "libgl1-mesa-dri",
+    "mesa-utils",
+    "x11-xserver-utils",
+]
+
+live_system = [
+    "live-boot",
+    "live-config",
+    "live-config-systemd",
+    "squashfs-tools",
+    "xorriso",
+]
+
+installer_packages = [
+    "calamares",
+    "calamares-settings-debian",
+]
+
+[overlay]
+# 覆盖层配置
+directories = ["filesystem", "hooks", "branding"]
+auto_discover = true
+
+[overlay.hooks]
+execution_order = "alphabetical"
+fail_on_error = false
+timeout_seconds = 300
+
+[metadata]
+# 构建元数据
+vendor = "Lingmo Project"
+maintainer = "Lingmo Build System <build@lingmo.org>"
+license = "GPL-3.0-or-later"
+homepage = "https://www.lingmo.org"
+
+[metadata.versioning]
+scheme = "semver"
+template = "{major}.{minor}.{patch}-{suite}.{arch}"
+
+[validation]
+# 验证规则
+require_checksums = true
+require_manifest = true
+minimum_iso_size_mb = 500
+maximum_iso_size_mb = 4096
+
+[telemetry]
+# 可观测性配置
+enable_logging = true
+log_level = "info"
+log_format = "json"
+save_build_logs = true
+log_retention_days = 30
+
+[caching]
+# 缓存策略
+enable_package_cache = true
+cache_directory = "./workspace/cache"
+max_cache_size_gb = 10
+cache_ttl_hours = 168
+
+[network]
+# 网络配置
+retry_attempts = 3
+retry_delay_seconds = 5
+download_timeout_minutes = 30
+parallel_downloads = 4
+
+[security]
+# 安全相关配置
+verify_gpg_signatures = true
+allow_insecure_repos = false
+enforce_https = true
