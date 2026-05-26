@@ -1,5 +1,6 @@
 use clap::Parser;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use std::path::PathBuf;
+use tracing::info;
 
 mod command;
 mod engine;
@@ -13,23 +14,25 @@ mod config;
 mod telemetry;
 
 use command::Cli;
+use telemetry::{BuildId, build_id::BuildId as BuildIdStruct};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_logging();
-
     let cli = Cli::parse();
     
-    tracing::info!("lmforge v{} starting", env!("CARGO_PKG_VERSION"));
+    let build_id = BuildIdStruct::new();
+    let output_dir = cli.output.clone().unwrap_or_else(|| PathBuf::from("./output"));
+    
+    let log_dir = build_id.logs_dir(&output_dir);
+    telemetry::init(&build_id.id, &log_dir)?;
+    
+    info!(
+        build_id = %build_id,
+        version = env!("CARGO_PKG_VERSION"),
+        "lmforge starting"
+    );
 
     cli.execute().await?;
 
     Ok(())
-}
-
-fn init_logging() {
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with(fmt::layer())
-        .init();
 }

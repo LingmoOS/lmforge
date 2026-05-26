@@ -1,8 +1,11 @@
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::Instant;
 use anyhow::{Result, bail};
 use tokio::process::Command;
-use tracing::{debug, info};
+use tracing::{debug, info, error};
+
+use crate::telemetry::runtime::RuntimeLogger;
 
 #[derive(Debug, Clone)]
 pub struct ProcessConfig {
@@ -12,6 +15,7 @@ pub struct ProcessConfig {
     pub env: Vec<(String, String)>,
     pub timeout: Option<std::time::Duration>,
     pub capture_output: bool,
+    pub build_id: Option<String>,
 }
 
 impl Default for ProcessConfig {
@@ -23,6 +27,7 @@ impl Default for ProcessConfig {
             env: vec![],
             timeout: None,
             capture_output: true,
+            build_id: None,
         }
     }
 }
@@ -61,6 +66,11 @@ impl ProcessConfig {
         self.timeout = Some(duration);
         self
     }
+
+    pub fn with_build_id(mut self, id: impl Into<String>) -> Self {
+        self.build_id = Some(id.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -82,11 +92,19 @@ pub struct Executor;
 
 impl Executor {
     pub async fn execute(config: &ProcessConfig) -> Result<ProcessOutput> {
-        debug!(
-            "Executing: {} {}",
-            config.command,
-            config.args.join(" ")
+        let logger = RuntimeLogger::new(
+            config.build_id.as_deref().unwrap_or("unknown")
         );
+
+        let args_refs: Vec<&str> = config.args.iter().map(|s| s.as_str()).collect();
+        
+        logger.log_process_start(
+            &config.command,
+            &args_refs,
+            config.working_dir.as_ref()
+        );
+
+        let start_time = Instant::now();
 
         let mut cmd = Command::new(&config.command);
 
@@ -114,6 +132,8 @@ impl Executor {
             None => Ok(cmd.output().await?),
         };
 
+        let duration = start_time.elapsed();
+
         match execution {
             Ok(output) => {
                 let output = output?;
@@ -128,12 +148,18 @@ impl Executor {
                     )
                 };
 
-                if !stdout.is_empty() {
-                    debug!("stdout: {}", stdout);
-                }
-                if !stderr.is_empty() {
-                    debug!("stderr: {}", stderr);
-                }
+                logger.log_process_complete(
+                    &config.command,
+                    match &status {
+                        ExitStatus::Success => 0,
+                        ExitStatus::Failure(code) => *code,
+                        ExitStatus::Timeout => -1,
+                        ExitStatus::NotFound => -2,
+                    },
+                    duration,
+                    &stdout,
+                    &stderr
+                );
 
                 Ok(ProcessOutput {
                     status,
@@ -142,7 +168,8 @@ impl Executor {
                 })
             }
             Err(_) => {
-                info!("Process timed out: {}", config.command);
+                error!(target: "lmforge_runtime", "process timed out: {}", config.command);
+                
                 Ok(ProcessOutput {
                     status: ExitStatus::Timeout,
                     stdout: String::new(),

@@ -3,12 +3,14 @@ use anyhow::{Result, bail};
 use tracing::{debug, warn};
 
 use super::process::{Executor, ProcessConfig};
+use crate::telemetry::runtime::RuntimeLogger;
 
 pub struct Mount;
 
 impl Mount {
     pub async fn bind(source: &Path, target: &Path) -> Result<()> {
-        debug!("Binding mount {:?} -> {:?}", source, target);
+        let logger = RuntimeLogger::new("unknown");
+        logger.log_mount(&source.to_path_buf(), &target.to_path_buf(), "bind");
         
         if !source.exists() {
             bail!("Source path does not exist: {:?}", source);
@@ -30,7 +32,8 @@ impl Mount {
     }
 
     pub async fn unmount(target: &Path) -> Result<()> {
-        debug!("Unmounting {:?}", target);
+        let logger = RuntimeLogger::new("unknown");
+        logger.log_unmount(&target.to_path_buf());
 
         let output = Executor::execute(
             &ProcessConfig::new("umount")
@@ -40,7 +43,7 @@ impl Mount {
         match output.status {
             super::process::ExitStatus::Success => Ok(()),
             _ => {
-                warn!("Failed to unmount {:?}: {}, trying lazy unmount", target, output.stderr);
+                warn!(target: "lmforge_runtime", "Failed to unmount {:?}: {}, trying lazy unmount", target, output.stderr);
                 
                 let lazy_output = Executor::execute(
                     &ProcessConfig::new("umount")
@@ -59,7 +62,12 @@ impl Mount {
     pub async fn tmpfs(target: &Path, size: Option<&str>) -> Result<()> {
         let size_str = size.unwrap_or("1G");
         
-        debug!("Mounting tmpfs on {:?} (size={})", target, size_str);
+        let logger = RuntimeLogger::new("unknown");
+        logger.log_mount(
+            &PathBuf::from("tmpfs"),
+            &target.to_path_buf(),
+            "tmpfs"
+        );
 
         std::fs::create_dir_all(target)?;
 
@@ -80,7 +88,12 @@ impl Mount {
     }
 
     pub async fn proc(target: &Path) -> Result<()> {
-        debug!("Mounting proc on {:?}", target);
+        let logger = RuntimeLogger::new("unknown");
+        logger.log_mount(
+            &PathBuf::from("proc"),
+            &target.to_path_buf(),
+            "proc"
+        );
 
         std::fs::create_dir_all(target)?;
 
@@ -99,7 +112,12 @@ impl Mount {
     }
 
     pub async fn sysfs(target: &Path) -> Result<()> {
-        debug!("Mounting sysfs on {:?}", target);
+        let logger = RuntimeLogger::new("unknown");
+        logger.log_mount(
+            &PathBuf::from("sysfs"),
+            &target.to_path_buf(),
+            "sysfs"
+        );
 
         std::fs::create_dir_all(target)?;
 
@@ -118,7 +136,12 @@ impl Mount {
     }
 
     pub async fn devpts(target: &Path) -> Result<()> {
-        debug!("Mounting devpts on {:?}", target);
+        let logger = RuntimeLogger::new("unknown");
+        logger.log_mount(
+            &PathBuf::from("devpts"),
+            &target.to_path_buf(),
+            "devpts"
+        );
 
         std::fs::create_dir_all(target)?;
 
@@ -137,7 +160,7 @@ impl Mount {
     }
 
     pub async fn mount_all_for_chroot(root: &Path) -> Result<()> {
-        info!("Mounting all filesystems for chroot at {:?}", root);
+        info!(target: "lmforge_workspace", "mounting filesystems for chroot");
 
         Self::proc(&root.join("proc")).await?;
         Self::sysfs(&root.join("sys")).await?;
@@ -149,7 +172,7 @@ impl Mount {
     }
 
     pub async fn unmount_all_from_chroot(root: &Path) -> Result<()> {
-        info!("Unmounting all filesystems from chroot at {:?}", root);
+        info!(target: "lmforge_workspace", "unmounting filesystems from chroot");
 
         let mount_points = [
             root.join("run"),
@@ -162,7 +185,7 @@ impl Mount {
         for mount_point in mount_points.iter().rev() {
             if mount_point.exists() {
                 if let Err(e) = Self::unmount(mount_point).await {
-                    warn!("Failed to unmount {:?}: {}", mount_point, e);
+                    warn!(target: "lmforge_runtime", "failed to unmount {:?}: {}", mount_point, e);
                 }
             }
         }
