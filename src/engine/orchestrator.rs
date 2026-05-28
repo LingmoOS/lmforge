@@ -1,8 +1,7 @@
 use std::sync::Arc;
-use std::path::PathBuf;
 use std::time::Instant;
 use anyhow::{Result, bail};
-use tracing::{info, warn, error};
+use tracing::{info, debug};
 
 use crate::domain::context::{BuildContext, BuildConfig};
 use crate::domain::config::{ConfigLoader, PartialConfig};
@@ -20,7 +19,11 @@ use crate::infra::OverlayManager;
 use crate::telemetry::build_id::BuildId as BuildIdStruct;
 use crate::telemetry::runtime::RuntimeLogger;
 
-use super::cli::Cli;
+use crate::command::cli::Cli;
+
+use crate::stage_info;
+use crate::stage_warn;
+use crate::stage_error;
 
 pub struct BuildOrchestrator {
     target: String,
@@ -61,7 +64,7 @@ impl BuildOrchestrator {
         self
     }
 
-    pub async fn run(&self, cli: &Cli) -> Result<()> {
+    pub fn run(&self, cli: &Cli) -> Result<()> {
         let logger = RuntimeLogger::new(&self.build_id.id);
         
         info!(
@@ -75,7 +78,7 @@ impl BuildOrchestrator {
         
         if self.clean {
             logger.log_workspace_cleanup(&config.workspace_dir);
-            self.cleanup_workspace(&config).await?;
+            self.cleanup_workspace(&config)?;
         }
 
         logger.log_workspace_create(&config.workspace_dir);
@@ -90,15 +93,15 @@ impl BuildOrchestrator {
         );
 
         let platform = self.create_platform(&ctx)?;
-        platform.validate_environment().await?;
+        platform.validate_environment()?;
 
         let image_engine = self.create_image_engine(&ctx)?;
 
-        let pipeline = self.build_pipeline(&mut ctx, &*platform, &*image_engine).await?;
+        let pipeline = self.build_pipeline(&mut ctx, &*platform, &*image_engine)?;
 
         let start_time = Instant::now();
         
-        let completed_stages = pipeline.execute(&mut ctx).await?;
+        let completed_stages = pipeline.execute(&mut ctx)?;
         
         let duration = start_time.elapsed();
 
@@ -110,7 +113,7 @@ impl BuildOrchestrator {
             "build completed successfully"
         );
 
-        let artifacts = ctx.get_artifacts().await;
+        let artifacts = ctx.get_artifacts_sync();
         if !artifacts.is_empty() {
             for artifact in &artifacts {
                 stage_info!("release",
@@ -123,7 +126,7 @@ impl BuildOrchestrator {
             }
         }
 
-        image_engine.cleanup(&mut ctx).await?;
+        image_engine.cleanup(&mut ctx)?;
 
         Ok(())
     }
@@ -153,7 +156,7 @@ impl BuildOrchestrator {
             .with_builtin()?
             .with_preset(self.profile.as_deref().unwrap_or("official"))?
             .with_etc_config()?
-            .with_user_config(&cli.config.clone().unwrap_or_default())
+            .with_user_config(&cli.config.clone().unwrap_or_default())?
             .with_cli_overrides(&partial_config);
 
         let config = loader.merge();
@@ -162,11 +165,11 @@ impl BuildOrchestrator {
         Ok(config)
     }
 
-    async fn cleanup_workspace(&self, config: &BuildConfig) -> Result<()> {
-        let logger = RuntimeLogger::new(&self.build_id.id);
+    fn cleanup_workspace(&self, config: &BuildConfig) -> Result<()> {
+        let _logger = RuntimeLogger::new(&self.build_id.id);
 
         if config.workspace_dir.exists() {
-            tokio::fs::remove_dir_all(&config.workspace_dir).await?;
+            std::fs::remove_dir_all(&config.workspace_dir)?;
         }
 
         if config.output_dir.exists() {
@@ -175,7 +178,7 @@ impl BuildOrchestrator {
                 let path = entry.path();
                 
                 if path.extension().map_or(false, |ext| ext == "iso" || ext == "zst") {
-                    tokio::fs::remove_file(&path).await?;
+                    std::fs::remove_file(&path)?;
                 }
             }
         }
@@ -183,15 +186,15 @@ impl BuildOrchestrator {
         Ok(())
     }
 
-    fn create_platform(&self, _ctx: &BuildContext) -> Result<Arc<dyn Platform>> {
+    fn create_platform(&self, ctx: &BuildContext) -> Result<Arc<dyn Platform>> {
         stage_info!("workspace",
-            platform_name = _ctx.config.platform.name,
+            platform_name = ctx.config.platform.name,
             "creating platform instance"
         );
 
         let platform: Arc<dyn Platform> = Arc::new(
-            DebianPlatform::new(_ctx.suite())
-                .with_components(_ctx.config.platform.components.clone())
+            DebianPlatform::new(ctx.suite())
+                .with_components(ctx.config.platform.components.clone())
         );
 
         Ok(platform)
@@ -214,7 +217,7 @@ impl BuildOrchestrator {
         }
     }
 
-    async fn build_pipeline(
+    fn build_pipeline(
         &self,
         ctx: &mut BuildContext,
         platform: &dyn Platform,
@@ -252,8 +255,8 @@ impl BuildOrchestrator {
 
         let feature_instances = self.create_feature_instances()?;
         for feature in &feature_instances {
-            feature.register_stages(&mut stages).await?;
-            feature.prepare_overlay(ctx).await?;
+            feature.register_stages(&mut stages)?;
+            feature.prepare_overlay(ctx)?;
         }
 
         let pipeline = Pipeline::with_stages(stages)?;
@@ -302,7 +305,6 @@ struct BootstrapStage {
     build_id: BuildIdStruct,
 }
 
-#[async_trait]
 impl Stage for BootstrapStage {
     fn name(&self) -> &str {
         "workspace"
@@ -312,7 +314,7 @@ impl Stage for BootstrapStage {
         "Bootstrap base system using debootstrap"
     }
 
-    async fn run(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn run(&self, ctx: &mut BuildContext) -> Result<()> {
         use crate::platform::debian::DebianPlatform;
 
         let logger = RuntimeLogger::new(&self.build_id.id);
@@ -323,7 +325,7 @@ impl Stage for BootstrapStage {
         let platform = DebianPlatform::new(ctx.suite())
             .with_components(ctx.config.platform.components.clone());
 
-        platform.bootstrap(ctx).await?;
+        platform.bootstrap(ctx)?;
 
         let duration = start_time.elapsed();
         logger.log_stage_complete("workspace", duration);
@@ -336,7 +338,6 @@ struct PackagesStage {
     build_id: BuildIdStruct,
 }
 
-#[async_trait]
 impl Stage for PackagesStage {
     fn name(&self) -> &str {
         "packages"
@@ -350,7 +351,9 @@ impl Stage for PackagesStage {
         vec!["workspace"]
     }
 
-    async fn run(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn run(&self, ctx: &mut BuildContext) -> Result<()> {
+        use crate::platform::debian::DebianPlatform;
+
         let logger = RuntimeLogger::new(&self.build_id.id);
         logger.log_stage_start("packages");
 
@@ -359,12 +362,10 @@ impl Stage for PackagesStage {
         let packages = OverlayManager::load_package_list(&ctx.workspace.overlay)?;
         
         if !packages.is_empty() {
-            use crate::platform::debian::DebianPlatform;
-            
             let platform = DebianPlatform::new(ctx.suite());
             let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
             
-            platform.install_packages(ctx, &pkg_refs).await?;
+            platform.install_packages(ctx, &pkg_refs)?;
             
             stage_info!("packages", package_count = packages.len(), "installed packages");
         } else {
@@ -382,7 +383,6 @@ struct OverlayStage {
     build_id: BuildIdStruct,
 }
 
-#[async_trait]
 impl Stage for OverlayStage {
     fn name(&self) -> &str {
         "overlay"
@@ -396,13 +396,19 @@ impl Stage for OverlayStage {
         vec!["packages"]
     }
 
-    async fn run(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn run(&self, ctx: &mut BuildContext) -> Result<()> {
         let logger = RuntimeLogger::new(&self.build_id.id);
         logger.log_stage_start("overlay");
 
         let start_time = Instant::now();
 
-        OverlayManager::apply_overlays(ctx).await?;
+        stage_info!("overlay",
+            overlay_dir = ?ctx.workspace.overlay,
+            "applying overlays to rootfs"
+        );
+
+        let overlay_manager = OverlayManager::new(&ctx.workspace.rootfs);
+        overlay_manager.apply_overlays(&ctx.workspace.rootfs)?;
 
         let duration = start_time.elapsed();
         logger.log_stage_complete("overlay", duration);
@@ -416,41 +422,49 @@ struct ImageStage {
     build_id: BuildIdStruct,
 }
 
-#[async_trait]
 impl Stage for ImageStage {
     fn name(&self) -> &str {
         "image"
     }
 
     fn description(&self) -> &str {
-        "Generate image using configured image engine"
+        "Generate image using live-build engine"
     }
 
     fn dependencies(&self) -> Vec<&str> {
         vec!["overlay"]
     }
 
-    async fn run(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn run(&self, ctx: &mut BuildContext) -> Result<()> {
         let logger = RuntimeLogger::new(&self.build_id.id);
         logger.log_stage_start("image");
 
         let start_time = Instant::now();
 
-        stage_info!(target: "lmforge_image",
+        stage_info!("image",
             engine = %self.engine_name,
             "generating image"
         );
 
-        match ctx.config.image.engine.clone() {
+        let image_engine = match &ctx.config.image.engine {
             crate::domain::context::ImageEngineType::LiveBuild => {
-                let engine = LiveBuildEngine::new(ctx.workspace.temp.join("lb"));
-                
-                engine.prepare(ctx).await?;
-                engine.build(ctx).await?;
+                Box::new(LiveBuildEngine::new(ctx.workspace.temp.join("lb"))) as Box<dyn ImageEngine>
             }
             crate::domain::context::ImageEngineType::Native => {
-                return Err(anyhow::anyhow!("Native engine not yet implemented"));
+                stage_error!("image", "native engine not yet implemented");
+                bail!("Native image engine is not yet implemented");
             }
+        };
+
+        image_engine.prepare(ctx)?;
+        let artifacts = image_engine.build(ctx)?;
+
+        for artifact in &artifacts {
+            stage_info!("image",
+                filename = %artifact.filename(),
+                kind = ?artifact.kind,
+                "generated artifact"
+            );
         }
 
         let duration = start_time.elapsed();
@@ -464,55 +478,46 @@ struct MetadataStage {
     build_id: BuildIdStruct,
 }
 
-#[async_trait]
 impl Stage for MetadataStage {
     fn name(&self) -> &str {
         "metadata"
     }
 
     fn description(&self) -> &str {
-        "Generate manifest and checksum files"
+        "Generate manifest and checksums"
     }
 
     fn dependencies(&self) -> Vec<&str> {
         vec!["image"]
     }
 
-    async fn run(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn run(&self, ctx: &mut BuildContext) -> Result<()> {
+        use crate::infra::checksum::ChecksumGenerator;
+
         let logger = RuntimeLogger::new(&self.build_id.id);
         logger.log_stage_start("metadata");
 
         let start_time = Instant::now();
 
-        ctx.ensure_output_dir()?;
+        stage_info!("metadata", "generating manifest and checksums");
 
-        let artifacts = ctx.get_artifacts().await;
+        let output_path = ctx.output_path();
         
-        if !artifacts.is_empty() {
-            let manifest_path = ctx.output_path().join("MANIFEST");
-            let checksum_path = ctx.output_path().join("SHA256SUMS");
+        let checksums = {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                ChecksumGenerator::generate_checksums_for_directory(&output_path).await
+            })?
+        };
 
-            let mut manifest_content = String::new();
-            let mut checksum_content = String::new();
-
-            for artifact in &artifacts {
-                manifest_content.push_str(&artifact.to_manifest_entry());
-                manifest_content.push('\n');
-
-                checksum_content.push_str(&format!(
-                    "{}  {}\n",
-                    artifact.checksum,
-                    artifact.filename()
-                ));
-            }
-
-            tokio::fs::write(&manifest_path, manifest_content).await?;
-            tokio::fs::write(&checksum_path, checksum_content).await?;
-
-            stage_info!(target: "lmforge_release",
-                manifest = ?manifest_path,
-                checksums = ?checksum_path,
-                "metadata generated"
+        if !checksums.is_empty() {
+            let sha256_file = output_path.join("SHA256SUMS");
+            ChecksumGenerator::write_checksum_file(&checksums, &sha256_file)?;
+            
+            stage_info!("metadata",
+                file = ?sha256_file,
+                count = checksums.len(),
+                "written SHA256SUMS"
             );
         }
 
@@ -527,48 +532,32 @@ struct ReleaseStage {
     build_id: BuildIdStruct,
 }
 
-#[async_trait]
 impl Stage for ReleaseStage {
     fn name(&self) -> &str {
         "release"
     }
 
     fn description(&self) -> &str {
-        "Finalize release and generate build information"
+        "Finalize release artifacts"
     }
 
     fn dependencies(&self) -> Vec<&str> {
         vec!["metadata"]
     }
 
-    async fn run(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn run(&self, ctx: &mut BuildContext) -> Result<()> {
         let logger = RuntimeLogger::new(&self.build_id.id);
         logger.log_stage_start("release");
 
         let start_time = Instant::now();
 
-        let build_info = serde_json::json!({
-            "version": ctx.version(),
-            "arch": ctx.arch(),
-            "suite": ctx.suite(),
-            "build_time": chrono::Utc::now().to_rfc3339(),
-            "stages_completed": ctx.runtime_state.stages_completed,
-            "artifacts_count": ctx.get_artifacts().await.len(),
-            "lmforge_version": env!("CARGO_PKG_VERSION"),
-            "build_id": self.build_id.id,
-        });
+        stage_info!("release", "finalizing release");
 
-        let build_info_path = ctx.output_path().join("BUILDINFO.json");
-        tokio::fs::write(
-            &build_info_path,
-            serde_json::to_string_pretty(&build_info)?
-        ).await?;
-
-        stage_info!(target: "lmforge_release",
-            buildinfo = ?build_info_path,
-            artifacts_count = ctx.get_artifacts().await.len(),
-            stages = ?ctx.runtime_state.stages_completed,
-            "release finalized"
+        let artifacts = ctx.get_artifacts_sync();
+        
+        stage_info!("release",
+            total_artifacts = artifacts.len(),
+            "build complete"
         );
 
         let duration = start_time.elapsed();

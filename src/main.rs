@@ -10,14 +10,12 @@ mod platform;
 mod stages;
 mod features;
 mod infra;
-mod config;
 mod telemetry;
 
-use command::Cli;
-use telemetry::{BuildId, build_id::BuildId as BuildIdStruct};
+use command::cli::Cli;
+use telemetry::build_id::BuildId as BuildIdStruct;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     
     let build_id = BuildIdStruct::new();
@@ -32,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
         "lmforge starting"
     );
 
-    cli.execute().await?;
+    cli.execute()?;
 
     Ok(())
 }

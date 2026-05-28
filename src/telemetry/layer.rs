@@ -1,4 +1,3 @@
-use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Layer;
 
 pub trait TelemetryLayer: Sized {

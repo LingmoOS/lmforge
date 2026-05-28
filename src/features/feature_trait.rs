@@ -1,9 +1,7 @@
-use async_trait::async_trait;
 use anyhow::Result;
 use crate::domain::context::BuildContext;
 use crate::stages::stage::Stage;
 
-#[async_trait]
 pub trait Feature: Send + Sync {
     fn name(&self) -> &str;
 
@@ -19,9 +17,9 @@ pub trait Feature: Send + Sync {
         vec![]
     }
 
-    async fn register_stages(&self, pipeline: &mut Vec<Box<dyn Stage>>) -> Result<()>;
+    fn register_stages(&self, pipeline: &mut Vec<Box<dyn Stage>>) -> Result<()>;
 
-    async fn prepare_overlay(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn prepare_overlay(&self, ctx: &mut BuildContext) -> Result<()> {
         let _ = ctx;
         Ok(())
     }

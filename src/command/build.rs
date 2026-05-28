@@ -1,4 +1,4 @@
-use clap::{Parser, Args};
+use clap::Parser;
 use anyhow::Result;
 use tracing::info;
 
@@ -32,7 +32,7 @@ pub struct BuildCommand {
 }
 
 impl BuildCommand {
-    pub async fn execute(&self, cli: &Cli) -> Result<()> {
+    pub fn execute(&self, cli: &Cli) -> Result<()> {
         info!(
             "Building target '{}' with profile '{:?}'",
             self.target,
@@ -66,7 +66,7 @@ impl BuildCommand {
             .with_features(features)
             .with_clean(self.clean);
 
-        orchestrator.run(cli).await?;
+        orchestrator.run(cli)?;
 
         Ok(())
     }

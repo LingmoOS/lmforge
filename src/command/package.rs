@@ -1,4 +1,4 @@
-use clap::{Parser, Args};
+use clap::{Parser, Args, Subcommand};
 use anyhow::Result;
 use tracing::info;
 
@@ -53,7 +53,7 @@ pub struct PackageListArgs {
 }
 
 impl PackageCommand {
-    pub async fn execute(&self, _cli: &Cli) -> Result<()> {
+    pub fn execute(&self, _cli: &Cli) -> Result<()> {
         match &self.action {
             PackageAction::Build(args) => {
                 info!("Building package: {:?}", args.name);

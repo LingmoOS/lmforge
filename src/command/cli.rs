@@ -71,7 +71,7 @@ pub struct ConfigCommand {
     pub show: bool,
 
     /// Validate configuration
-    #[arg(short, long)]
+    #[arg(long)]
     pub validate: bool,
 
     /// Generate default configuration
@@ -80,22 +80,22 @@ pub struct ConfigCommand {
 }
 
 impl Cli {
-    pub async fn execute(&self) -> Result<()> {
+    pub fn execute(&self) -> Result<()> {
         match &self.command {
-            Commands::Build(cmd) => cmd.execute(self).await?,
-            Commands::Package(cmd) => cmd.execute(self).await?,
-            Commands::Repo(cmd) => self.execute_repo_command(cmd).await?,
-            Commands::Config(cmd) => self.execute_config_command(cmd).await?,
+            Commands::Build(cmd) => cmd.execute(self)?,
+            Commands::Package(cmd) => cmd.execute(self)?,
+            Commands::Repo(cmd) => self.execute_repo_command(cmd)?,
+            Commands::Config(cmd) => self.execute_config_command(cmd)?,
         }
         Ok(())
     }
 
-    async fn execute_repo_command(&self, _cmd: &RepoCommand) -> Result<()> {
+    fn execute_repo_command(&self, _cmd: &RepoCommand) -> Result<()> {
         println!("Repository commands not yet implemented");
         Ok(())
     }
 
-    async fn execute_config_command(&self, cmd: &ConfigCommand) -> Result<()> {
+    fn execute_config_command(&self, cmd: &ConfigCommand) -> Result<()> {
         if cmd.show || (!cmd.validate && !cmd.generate) {
             self.show_config();
         }

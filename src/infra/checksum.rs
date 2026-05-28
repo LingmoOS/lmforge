@@ -36,9 +36,9 @@ impl ChecksumGenerator {
                     .to_string();
                 
                 let checksum = Self::sha256_file(&path).await?;
-                checksums.push((filename, checksum));
                 
                 info!("Generated SHA256 for {}: {}", filename, &checksum[..16]);
+                checksums.push((filename, checksum));
             }
         }
 

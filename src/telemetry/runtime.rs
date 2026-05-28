@@ -1,6 +1,5 @@
 use std::path::PathBuf;
-use std::time::Instant;
-use tracing::{info, debug, warn, error, span, Level};
+use tracing::{info, debug, error, span, Level};
 
 pub struct RuntimeLogger {
     build_id: String,

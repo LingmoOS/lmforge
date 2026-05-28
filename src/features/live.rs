@@ -19,7 +19,6 @@ impl LiveFeature {
     }
 }
 
-#[async_trait]
 impl Feature for LiveFeature {
     fn name(&self) -> &str {
         "live"
@@ -29,12 +28,11 @@ impl Feature for LiveFeature {
         "Live system support (bootable ISO)"
     }
 
-    async fn register_stages(&self, pipeline: &mut Vec<Box<dyn Stage>>) -> Result<()> {
+    fn register_stages(&self, pipeline: &mut Vec<Box<dyn Stage>>) -> Result<()> {
         info!("Registering live system stages");
 
         struct LiveBootStage;
 
-        #[async_trait]
         impl Stage for LiveBootStage {
             fn name(&self) -> &str {
                 "live-boot"
@@ -48,10 +46,9 @@ impl Feature for LiveFeature {
                 vec!["packages"]
             }
 
-            async fn run(&self, _ctx: &mut BuildContext) -> Result<()> {
+            fn run(&self, _ctx: &mut BuildContext) -> Result<()> {
                 info!("Configuring live boot system");
                 
-                // Configure live-boot, casper, etc.
                 debug!("Live boot configuration applied");
                 
                 Ok(())
@@ -60,7 +57,6 @@ impl Feature for LiveFeature {
 
         struct LivePackagesStage;
 
-        #[async_trait]
         impl Stage for LivePackagesStage {
             fn name(&self) -> &str {
                 "live-packages"
@@ -74,10 +70,9 @@ impl Feature for LiveFeature {
                 vec!["bootstrap"]
             }
 
-            async fn run(&self, _ctx: &mut BuildContext) -> Result<()> {
+            fn run(&self, _ctx: &mut BuildContext) -> Result<()> {
                 info!("Installing live system packages");
                 
-                // Install live-boot, casper, etc.
                 debug!("Live packages would be installed here");
                 
                 Ok(())
@@ -90,7 +85,7 @@ impl Feature for LiveFeature {
         Ok(())
     }
 
-    async fn prepare_overlay(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn prepare_overlay(&self, ctx: &mut BuildContext) -> Result<()> {
         info!("Preparing live system overlay");
 
         let overlay_dir = ctx.workspace.overlay.join("live");

@@ -142,14 +142,14 @@ impl ConfigLoader {
         let mut sorted_layers = self.layers;
         sorted_layers.sort_by_key(|l| l.priority);
 
-        for layer in sorted_layers {
-            self.apply_partial(&mut base, &layer.config);
+        for layer in &sorted_layers {
+            Self::apply_partial(&mut base, &layer.config);
         }
 
         base
     }
 
-    fn apply_partial(&self, base: &mut BuildConfig, partial: &PartialConfig) {
+    fn apply_partial(base: &mut BuildConfig, partial: &PartialConfig) {
         if let Some(ref arch) = partial.arch {
             base.arch = arch.clone();
         }

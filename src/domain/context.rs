@@ -1,8 +1,7 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 
 use super::artifact::Artifact;
 
@@ -144,24 +143,24 @@ impl BuildContext {
         Ok(workspace)
     }
 
-    pub async fn register_artifact(&self, artifact: Artifact) {
-        let mut artifacts = self.artifacts.write().await;
+    pub fn register_artifact(&self, artifact: Artifact) {
+        let mut artifacts = self.artifacts.write().unwrap();
         artifacts.push(artifact);
     }
 
-    pub async fn get_artifacts(&self) -> Vec<Artifact> {
-        let artifacts = self.artifacts.read().await;
+    pub fn get_artifacts_sync(&self) -> Vec<Artifact> {
+        let artifacts = self.artifacts.read().unwrap();
         artifacts.clone()
     }
 
-    pub async fn log(&self, level: LogLevel, stage: &str, message: &str) {
+    pub fn log(&self, level: LogLevel, stage: &str, message: &str) {
         let entry = LogEntry {
             timestamp: chrono::Utc::now(),
             level,
             stage: stage.to_string(),
             message: message.to_string(),
         };
-        let mut logs = self.logs.write().await;
+        let mut logs = self.logs.write().unwrap();
         logs.push(entry);
     }
 
@@ -205,9 +204,9 @@ impl BuildContext {
         self.config.features.contains(&feature.to_string())
     }
 
-    pub async fn cleanup_workspace(&self) -> Result<()> {
+    pub fn cleanup_workspace(&self) -> Result<()> {
         if self.workspace.root.exists() {
-            tokio::fs::remove_dir_all(&self.workspace.root).await?;
+            std::fs::remove_dir_all(&self.workspace.root)?;
         }
         Ok(())
     }

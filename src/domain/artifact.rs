@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ArtifactKind {

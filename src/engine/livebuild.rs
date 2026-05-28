@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
-use tracing::{info, debug, warn};
+use tracing::{info, warn};
 
 use super::engine_trait::ImageEngine;
 use crate::domain::context::BuildContext;
@@ -79,16 +79,22 @@ LB_ISO_VOLUME="{}"
     }
 }
 
-#[async_trait]
 impl ImageEngine for LiveBuildEngine {
     fn name(&self) -> &str {
         "live-build"
     }
 
-    async fn prepare(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn prepare(&self, ctx: &mut BuildContext) -> Result<()> {
         info!("Preparing live-build environment");
 
-        if !Executor::exists("lb").await && !Executor::exists("lb_build").await {
+        let exists = {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                Executor::exists("lb").await || Executor::exists("lb_build").await
+            })
+        };
+
+        if !exists {
             bail!(
                 "live-build is not installed. Please install it first:\n  apt-get install live-build"
             );
@@ -97,28 +103,39 @@ impl ImageEngine for LiveBuildEngine {
         self.generate_live_build_config(ctx)?;
 
         let lb_config = ctx.workspace.temp.join("live-build");
+        let lb_config_clone = lb_config.clone();
 
-        Executor::execute_success(
-            &ProcessConfig::new("lb")
-                .arg("config")
-                .working_dir(&lb_config)
-        ).await?;
+        {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async move {
+                Executor::execute_success(
+                    &ProcessConfig::new("lb")
+                        .arg("config")
+                        .working_dir(&lb_config_clone)
+                ).await
+            })?;
+        }
 
         info!("Live-build preparation completed");
         Ok(())
     }
 
-    async fn build(&self, ctx: &mut BuildContext) -> Result<Vec<Artifact>> {
+    fn build(&self, ctx: &mut BuildContext) -> Result<Vec<Artifact>> {
         info!("Building image with live-build");
 
         let lb_config = ctx.workspace.temp.join("live-build");
 
-        let output = Executor::execute(
-            &ProcessConfig::new("lb")
-                .arg("build")
-                .working_dir(&lb_config)
-                .timeout(std::time::Duration::from_secs(3600))
-        ).await?;
+        let output = {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                Executor::execute(
+                    &ProcessConfig::new("lb")
+                        .arg("build")
+                        .working_dir(&lb_config)
+                        .timeout(std::time::Duration::from_secs(3600))
+                ).await
+            })?
+        };
 
         match output.status {
             crate::runtime::process::ExitStatus::Success => {
@@ -136,10 +153,22 @@ impl ImageEngine for LiveBuildEngine {
                         ctx.version(),
                     );
                     
-                    artifact.compute_checksum().await?;
+                    let _checksum = {
+                        let rt = tokio::runtime::Runtime::new()?;
+                        rt.block_on(async {
+                            artifact.compute_checksum().await
+                        })?
+                    };
                     
                     let output_iso = ctx.output_path().join(artifact.filename());
-                    tokio::fs::copy(&iso_path, &output_iso).await?;
+                    let output_iso_clone = output_iso.clone();
+                    
+                    {
+                        let rt = tokio::runtime::Runtime::new()?;
+                        rt.block_on(async move {
+                            tokio::fs::copy(&iso_path, &output_iso_clone).await
+                        })?
+                    };
                     
                     artifact.path = output_iso;
                     artifacts.push(artifact);
@@ -155,12 +184,17 @@ impl ImageEngine for LiveBuildEngine {
                         ctx.version(),
                     );
                     
-                    artifact.compute_checksum().await?;
+                    {
+                        let rt = tokio::runtime::Runtime::new()?;
+                        rt.block_on(async {
+                            artifact.compute_checksum().await
+                        })?
+                    };
                     artifacts.push(artifact);
                 }
 
                 for artifact in &artifacts {
-                    ctx.register_artifact(artifact.clone()).await;
+                    ctx.register_artifact(artifact.clone());
                 }
 
                 Ok(artifacts)
@@ -181,27 +215,39 @@ impl ImageEngine for LiveBuildEngine {
         }
     }
 
-    async fn cleanup(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn cleanup(&self, ctx: &mut BuildContext) -> Result<()> {
         info!("Cleaning up live-build environment");
 
         let lb_config = ctx.workspace.temp.join("live-build");
         
         if lb_config.exists() {
-            if let Err(e) = Executor::execute(
-                &ProcessConfig::new("lb")
-                    .arg("clean")
-                    .arg("--all")
-                    .working_dir(&lb_config)
-            ).await {
+            let result = {
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(async {
+                    Executor::execute(
+                        &ProcessConfig::new("lb")
+                            .arg("clean")
+                            .arg("--all")
+                            .working_dir(&lb_config)
+                    ).await
+                })
+            };
+            
+            if let Err(e) = result {
                 warn!("Failed to run lb clean: {}", e);
             }
             
-            if let Err(e) = tokio::fs::remove_dir_all(&lb_config).await {
+            if let Err(e) = std::fs::remove_dir_all(&lb_config) {
                 warn!("Failed to remove live-build config directory: {}", e);
             }
         }
 
-        Mount::unmount_all_from_chroot(&ctx.workspace.rootfs).await?;
+        {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                Mount::unmount_all_from_chroot(&ctx.workspace.rootfs).await
+            })?
+        }
 
         Ok(())
     }

@@ -1,9 +1,10 @@
 use std::path::PathBuf;
+use std::ffi::OsStr;
 use std::process::Stdio;
 use std::time::Instant;
 use anyhow::{Result, bail};
 use tokio::process::Command;
-use tracing::{debug, info, error};
+use tracing::error;
 
 use crate::telemetry::runtime::RuntimeLogger;
 
@@ -40,14 +41,14 @@ impl ProcessConfig {
         }
     }
 
-    pub fn arg(mut self, arg: impl Into<String>) -> Self {
-        self.args.push(arg.into());
+    pub fn arg(mut self, arg: impl AsRef<OsStr>) -> Self {
+        self.args.push(arg.as_ref().to_string_lossy().to_string());
         self
     }
 
-    pub fn args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn args(mut self, args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> Self {
         for arg in args {
-            self.args.push(arg.into());
+            self.args.push(arg.as_ref().to_string_lossy().to_string());
         }
         self
     }
@@ -121,7 +122,7 @@ impl Executor {
             cmd.current_dir(dir);
         }
 
-        for (key, value) in &config.config.env {
+        for (key, value) in &config.env {
             cmd.env(key, value);
         }
 
@@ -129,7 +130,7 @@ impl Executor {
             Some(timeout) => {
                 tokio::time::timeout(timeout, cmd.output()).await
             }
-            None => Ok(cmd.output().await?),
+            None => Ok(Ok(cmd.output().await?)),
         };
 
         let duration = start_time.elapsed();
@@ -150,9 +151,9 @@ impl Executor {
 
                 logger.log_process_complete(
                     &config.command,
-                    match &status {
+                    match status {
                         ExitStatus::Success => 0,
-                        ExitStatus::Failure(code) => *code,
+                        ExitStatus::Failure(code) => code,
                         ExitStatus::Timeout => -1,
                         ExitStatus::NotFound => -2,
                     },

@@ -1,4 +1,4 @@
 pub mod feature_trait;
-mod desktop;
-mod live;
-mod installer;
+pub mod desktop;
+pub mod live;
+pub mod installer;

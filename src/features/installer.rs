@@ -19,7 +19,6 @@ impl InstallerFeature {
     }
 }
 
-#[async_trait]
 impl Feature for InstallerFeature {
     fn name(&self) -> &str {
         "installer"
@@ -33,12 +32,11 @@ impl Feature for InstallerFeature {
         vec!["minimal"]
     }
 
-    async fn register_stages(&self, pipeline: &mut Vec<Box<dyn Stage>>) -> Result<()> {
+    fn register_stages(&self, pipeline: &mut Vec<Box<dyn Stage>>) -> Result<()> {
         info!("Registering installer stages");
 
         struct InstallerStage;
 
-        #[async_trait]
         impl Stage for InstallerStage {
             fn name(&self) -> &str {
                 "installer-setup"
@@ -52,10 +50,9 @@ impl Feature for InstallerFeature {
                 vec!["packages"]
             }
 
-            async fn run(&self, _ctx: &mut BuildContext) -> Result<()> {
+            fn run(&self, _ctx: &mut BuildContext) -> Result<()> {
                 info!("Setting up installer");
                 
-                // Configure Calamares or other installer
                 debug!("Installer configuration applied");
                 
                 Ok(())
@@ -67,7 +64,7 @@ impl Feature for InstallerFeature {
         Ok(())
     }
 
-    async fn prepare_overlay(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn prepare_overlay(&self, ctx: &mut BuildContext) -> Result<()> {
         info!("Preparing installer overlay");
 
         let overlay_dir = ctx.workspace.overlay.join("installer");

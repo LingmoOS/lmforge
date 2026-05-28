@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use anyhow::Result;
 use tracing::{info, debug};
 
@@ -52,7 +51,6 @@ impl DesktopFeature {
     }
 }
 
-#[async_trait]
 impl Feature for DesktopFeature {
     fn name(&self) -> &str {
         "desktop"
@@ -62,14 +60,13 @@ impl Feature for DesktopFeature {
         "Desktop environment support"
     }
 
-    async fn register_stages(&self, pipeline: &mut Vec<Box<dyn Stage>>) -> Result<()> {
+    fn register_stages(&self, pipeline: &mut Vec<Box<dyn Stage>>) -> Result<()> {
         info!("Registering desktop feature stages");
 
         struct DesktopStage {
             packages: Vec<&'static str>,
         }
 
-        #[async_trait]
         impl Stage for DesktopStage {
             fn name(&self) -> &str {
                 "desktop-install"
@@ -83,11 +80,9 @@ impl Feature for DesktopFeature {
                 vec!["bootstrap"]
             }
 
-            async fn run(&self, _ctx: &mut BuildContext) -> Result<()> {
+            fn run(&self, _ctx: &mut BuildContext) -> Result<()> {
                 info!("Installing desktop environment");
                 
-                // In a real implementation, this would call platform.install_packages
-                // For now, we just log the packages that would be installed
                 debug!("Packages to install: {:?}", self.packages);
                 
                 Ok(())
@@ -101,7 +96,7 @@ impl Feature for DesktopFeature {
         Ok(())
     }
 
-    async fn prepare_overlay(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn prepare_overlay(&self, ctx: &mut BuildContext) -> Result<()> {
         info!("Preparing desktop overlay");
 
         let overlay_dir = ctx.workspace.overlay.join("desktop");

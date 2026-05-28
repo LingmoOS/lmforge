@@ -1,6 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
-use tracing::{debug, warn};
+use tracing::{info, warn};
 
 use super::process::{Executor, ProcessConfig};
 use crate::telemetry::runtime::RuntimeLogger;
@@ -107,7 +107,7 @@ impl Mount {
 
         match output.status {
             super::process::ExitStatus::Success => Ok(()),
-            _ => bail!("Failed to mount proc on {:?}: {}", target, output.stderr),
+            _ => bail!("Failed to mount proc on {:?}", target),
         }
     }
 
@@ -131,7 +131,7 @@ impl Mount {
 
         match output.status {
             super::process::ExitStatus::Success => Ok(()),
-            _ => bail!("Failed to mount sysfs on {:?}: {}", target, output.stderr),
+            _ => bail!("Failed to mount sysfs on {:?}", target),
         }
     }
 
@@ -155,7 +155,7 @@ impl Mount {
 
         match output.status {
             super::process::ExitStatus::Success => Ok(()),
-            _ => bail!("Failed to mount devpts on {:?}: {}", target, output.stderr),
+            _ => bail!("Failed to mount devpts on {:?}", target),
         }
     }
 

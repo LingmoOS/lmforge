@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use anyhow::{Result, bail};
-use tracing::{info, warn, error};
+use tracing::{info, error};
 
 use super::stage::Stage;
 use crate::domain::context::BuildContext;
@@ -64,7 +64,7 @@ impl Pipeline {
         Ok(())
     }
 
-    pub async fn execute(&self, ctx: &mut BuildContext) -> Result<Vec<String>> {
+    pub fn execute(&self, ctx: &mut BuildContext) -> Result<Vec<String>> {
         self.validate_order()?;
         
         let mut completed = Vec::new();
@@ -80,12 +80,11 @@ impl Pipeline {
                 crate::domain::context::LogLevel::Info,
                 &stage_name,
                 &format!("Starting stage: {}", stage.description()),
-            )
-            .await;
+            );
 
             info!("Executing stage: {} - {}", stage_name, stage.description());
 
-            match stage.run(ctx).await {
+            match stage.run(ctx) {
                 Ok(_) => {
                     ctx.complete_stage(&stage_name);
                     completed.push(stage_name.clone());
@@ -94,8 +93,7 @@ impl Pipeline {
                         crate::domain::context::LogLevel::Info,
                         &stage_name,
                         "Stage completed successfully",
-                    )
-                    .await;
+                    );
                     
                     info!("Stage '{}' completed successfully", stage_name);
                 }
@@ -107,8 +105,7 @@ impl Pipeline {
                         crate::domain::context::LogLevel::Error,
                         &stage_name,
                         &error_msg,
-                    )
-                    .await;
+                    );
                     
                     error!("{}", error_msg);
                     

@@ -1,5 +1,4 @@
-use tracing_subscriber::fmt::{MakeWriter, format::FmtSpan};
-use std::io;
+use std::io::Write;
 use std::sync::Mutex;
 use console::Term;
 
@@ -67,13 +66,13 @@ impl ConsoleVisitor {
 }
 
 impl tracing::field::Visit for ConsoleVisitor {
-    fn record_debug(&mut self, field: &tracing::Field, value: &dyn std::fmt::Debug) {
+    fn record_debug(&mut self, field: &tracing_core::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
             self.message = Some(format!("{:?}", value));
         }
     }
 
-    fn record_str(&mut self, field: &tracing::Field, value: &str) {
+    fn record_str(&mut self, field: &tracing_core::field::Field, value: &str) {
         if field.name() == "message" {
             self.message = Some(value.to_string());
         }

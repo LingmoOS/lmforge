@@ -1,8 +1,9 @@
 use std::path::PathBuf;
-use anyhow::{Result, bail};
+use anyhow::Result;
 use tracing::{info, warn};
 
 use super::process::{Executor, ProcessConfig};
+use super::mount::Mount;
 
 #[derive(Debug, Clone)]
 pub struct SandboxConfig {
@@ -59,6 +60,31 @@ impl SandboxConfig {
 pub struct Sandbox;
 
 impl Sandbox {
+    async fn mount_bind(source: &PathBuf, target: &PathBuf) -> Result<()> {
+        Mount::bind(source, target).await
+    }
+
+    async fn mount(source: &PathBuf, target: &PathBuf, fs_type: &str, options: &[String]) -> Result<()> {
+        let mut args = vec!["-t".to_string(), fs_type.to_string()];
+        for opt in options {
+            args.push("-o".to_string());
+            args.push(opt.clone());
+        }
+        args.push(source.to_string_lossy().to_string());
+        args.push(target.to_string_lossy().to_string());
+
+        Executor::execute(
+            &ProcessConfig::new("mount")
+                .args(args)
+        ).await?;
+
+        Ok(())
+    }
+
+    async fn unmount(target: &PathBuf) -> Result<()> {
+        Mount::unmount(target).await
+    }
+
     pub async fn prepare(config: &SandboxConfig) -> Result<()> {
         info!("Preparing sandbox at {:?}", config.root);
 
@@ -71,10 +97,10 @@ impl Sandbox {
 
             match mount.fs_type.as_deref() {
                 Some("bind") | None => {
-                    Self::mount_bind(&mount.source, &target)?;
+                    Self::mount_bind(&mount.source, &target).await?;
                 }
                 Some(fs_type) => {
-                    Self::mount(&mount.source, &target, fs_type, &mount.options)?;
+                    Self::mount(&mount.source, &target, fs_type, &mount.options).await?;
                 }
             }
         }
@@ -87,7 +113,7 @@ impl Sandbox {
 
         for mount in config.mounts.iter().rev() {
             let target = config.root.join(&mount.target);
-            if let Err(e) = Self::unmount(&target) {
+            if let Err(e) = Self::unmount(&target).await {
                 warn!("Failed to unmount {:?}: {}", target, e);
             }
         }
@@ -103,7 +129,7 @@ impl Sandbox {
             .args(full_args)
             .working_dir(&config.root);
 
-        for (key, value) in &config.environment {
+        for (_key, _value) in &config.environment {
             // Note: In real implementation, would need to handle environment properly
         }
 

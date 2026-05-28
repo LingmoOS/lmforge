@@ -1,2 +1,2 @@
 pub mod platform_trait;
-mod debian;
+pub mod debian;

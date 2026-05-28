@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use anyhow::{Result, bail};
 use tracing::{info, debug};
 
@@ -58,13 +57,12 @@ impl DebianPlatform {
     }
 }
 
-#[async_trait]
 impl Platform for DebianPlatform {
     fn name(&self) -> &str {
         "debian"
     }
 
-    async fn bootstrap(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn bootstrap(&self, ctx: &mut BuildContext) -> Result<()> {
         info!(
             "Bootstrapping Debian {} ({}) into {:?}",
             self.suite,
@@ -79,17 +77,25 @@ impl Platform for DebianPlatform {
 
         let args = self.get_bootstrap_command_args(ctx, None);
 
-        let output = Executor::execute(
-            &ProcessConfig::new(self.bootstrap_command())
-                .args(args)
-                .working_dir(&ctx.workspace.temp)
-        ).await?;
+        let output = {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                Executor::execute(
+                    &ProcessConfig::new(self.bootstrap_command())
+                        .args(args)
+                        .working_dir(&ctx.workspace.temp)
+                ).await
+            })?
+        };
 
         match output.status {
             crate::runtime::process::ExitStatus::Success => {
                 info!("Debootstrap completed successfully");
                 
-                Mount::mount_all_for_chroot(&ctx.workspace.rootfs).await?;
+                let rt = tokio::runtime::Runtime::new()?;
+                rt.block_on(async {
+                    Mount::mount_all_for_chroot(&ctx.workspace.rootfs).await
+                })?;
                 
                 Ok(())
             }
@@ -103,7 +109,7 @@ impl Platform for DebianPlatform {
         }
     }
 
-    async fn install_packages(&self, ctx: &mut BuildContext, packages: &[&str]) -> Result<()> {
+    fn install_packages(&self, ctx: &mut BuildContext, packages: &[&str]) -> Result<()> {
         info!("Installing packages: {:?}", packages);
 
         let mut args = vec![
@@ -117,12 +123,17 @@ impl Platform for DebianPlatform {
             args.push(pkg.to_string());
         }
 
-        let output = Executor::execute(
-            &ProcessConfig::new("chroot")
-                .arg(&ctx.workspace.rootfs)
-                .args(args)
-                .env("DEBIAN_FRONTEND", "noninteractive")
-        ).await?;
+        let output = {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                Executor::execute(
+                    &ProcessConfig::new("chroot")
+                        .arg(&ctx.workspace.rootfs)
+                        .args(args)
+                        .env("DEBIAN_FRONTEND", "noninteractive")
+                ).await
+            })?
+        };
 
         match output.status {
             crate::runtime::process::ExitStatus::Success => {
@@ -138,14 +149,17 @@ impl Platform for DebianPlatform {
         }
     }
 
-    async fn generate_repo_metadata(&self, ctx: &mut BuildContext) -> Result<()> {
+    fn generate_repo_metadata(&self, ctx: &mut BuildContext) -> Result<()> {
         info!("Generating repository metadata");
 
-        Executor::execute_success(
-            &ProcessConfig::new("chroot")
-                .arg(&ctx.workspace.rootfs)
-                .args(["apt-get", "update"])
-        ).await?;
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(async {
+            Executor::execute_success(
+                &ProcessConfig::new("chroot")
+                    .arg(&ctx.workspace.rootfs)
+                    .args(["apt-get", "update"])
+            ).await
+        })?;
 
         Ok(())
     }
@@ -162,17 +176,31 @@ impl Platform for DebianPlatform {
         "apt-get"
     }
 
-    async fn validate_environment(&self) -> Result<()> {
+    fn validate_environment(&self) -> Result<()> {
         info!("Validating Debian platform environment");
 
-        if !Executor::exists(self.bootstrap_command()).await {
+        let bootstrap_exists = {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                Executor::exists(self.bootstrap_command()).await
+            })
+        };
+
+        if !bootstrap_exists {
             bail!(
                 "{} is not installed. Please install it first.",
                 self.bootstrap_command()
             );
         }
 
-        if !Executor::exists("dpkg").await {
+        let dpkg_exists = {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(async {
+                Executor::exists("dpkg").await
+            })
+        };
+
+        if !dpkg_exists {
             bail!("dpkg is not installed");
         }
 
