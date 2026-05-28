@@ -1,7 +1,6 @@
-use std::sync::Arc;
 use std::time::Instant;
-use anyhow::{Result, bail};
-use tracing::{info, debug};
+use anyhow::{Result, Context};
+use tracing::{info, debug, warn, error};
 
 use crate::domain::context::{BuildContext, BuildConfig};
 use crate::domain::config::{ConfigLoader, PartialConfig};
@@ -15,7 +14,13 @@ use crate::features::feature_trait::Feature;
 use crate::features::desktop::DesktopFeature;
 use crate::features::live::LiveFeature;
 use crate::features::installer::InstallerFeature;
-use crate::infra::OverlayManager;
+use crate::infra::{
+    WorkspaceManager,
+    WorkspaceLayout,
+    OverlayManager,
+    ArtifactManager,
+    CleanupRecovery,
+};
 use crate::telemetry::build_id::BuildId as BuildIdStruct;
 use crate::telemetry::runtime::RuntimeLogger;
 
@@ -23,13 +28,13 @@ use crate::command::cli::Cli;
 
 use crate::stage_info;
 use crate::stage_warn;
-use crate::stage_error;
 
 pub struct BuildOrchestrator {
     target: String,
     profile: Option<String>,
     features: Vec<String>,
     clean: bool,
+    dry_run: bool,
     build_id: BuildIdStruct,
 }
 
@@ -40,6 +45,7 @@ impl BuildOrchestrator {
             profile: None,
             features: vec![],
             clean: false,
+            dry_run: false,
             build_id: BuildIdStruct::new(),
         }
     }
@@ -64,30 +70,127 @@ impl BuildOrchestrator {
         self
     }
 
+    pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+        self.dry_run = dry_run;
+        self
+    }
+
     pub fn run(&self, cli: &Cli) -> Result<()> {
         let logger = RuntimeLogger::new(&self.build_id.id);
         
         info!(
-            target: "lmforge_workspace",
+            target: "lmforge_orchestration",
             build_id = %self.build_id,
             target = %self.target,
+            dry_run = self.dry_run,
             "starting build orchestration"
         );
+
+        if self.dry_run {
+            return self.run_dry_run();
+        }
 
         let config = self.load_config(cli)?;
         
         if self.clean {
             logger.log_workspace_cleanup(&config.workspace_dir);
-            self.cleanup_workspace(&config)?;
+            self.cleanup_build_dir(&config)?;
         }
 
-        logger.log_workspace_create(&config.workspace_dir);
-        let mut ctx = BuildContext::new(config)?;
+        let workspace_manager = WorkspaceManager::new(&config.workspace_dir, &self.build_id.id);
+        
+        let workspace_layout = workspace_manager.initialize()
+            .context("Failed to initialize workspace")?;
 
-        stage_info!("workspace", 
+        let cleanup_recovery = CleanupRecovery::new(workspace_manager);
+        cleanup_recovery.initialize()
+            .context("Failed to initialize cleanup and recovery system")?;
+
+        let cleanup_with_ws = cleanup_recovery.with_workspace(workspace_layout.clone());
+
+        let result = self.execute_build(&config, &workspace_layout, &cleanup_with_ws);
+
+        match &result {
+            Ok(_) => {
+                cleanup_with_ws.mark_completed()
+                    .context("Failed to mark build as completed")?;
+                
+                logger.log_stage_complete("release", Instant::now().duration_since(Instant::now()));
+                info!(
+                    target: "lmforge_orchestration",
+                    build_id = %self.build_id,
+                    "build completed successfully"
+                );
+            }
+            Err(e) => {
+                let error_msg = e.to_string();
+                cleanup_with_ws.mark_failed(&error_msg)
+                    .context("Failed to mark build as failed")?;
+                
+                error!(
+                    target: "lmforge_orchestration",
+                    build_id = %self.build_id,
+                    error = %error_msg,
+                    "build failed"
+                );
+                
+                cleanup_with_ws.full_cleanup()
+                    .context("Failed to perform cleanup after failure")?;
+            }
+        }
+
+        result
+    }
+
+    fn run_dry_run(&self) -> Result<()> {
+        stage_info!("workspace",
+            mode = "dry-run",
+            build_id = %self.build_id,
+            "Dry run mode - would execute full build pipeline"
+        );
+
+        let stages = [
+            ("workspace", "Initialize build workspace"),
+            ("packages", "Install base packages"),
+            ("overlay", "Apply filesystem overlays"),
+            ("image", "Generate ISO with live-build"),
+            ("metadata", "Generate manifest and checksums"),
+            ("release", "Finalize release artifacts"),
+        ];
+
+        for (name, description) in &stages {
+            stage_info!(name, description = *description, "[dry-run] would execute");
+        }
+
+        stage_info!("release",
+            build_id = %self.build_id,
+            feature_count = self.features.len(),
+            features = ?self.features,
+            "Dry run complete"
+        );
+
+        Ok(())
+    }
+
+    fn execute_build(
+        &self,
+        config: &BuildConfig,
+        workspace_layout: &WorkspaceLayout,
+        cleanup: &CleanupRecovery,
+    ) -> Result<()> {
+        let logger = RuntimeLogger::new(&self.build_id.id);
+        
+        logger.log_workspace_create(&config.workspace_dir);
+        
+        let mut ctx = BuildContext::new(config.clone())?;
+        
+        ctx.set_current_stage("initialization");
+
+        stage_info!("workspace",
             arch = %ctx.arch(),
             suite = %ctx.suite(),
             output = ?ctx.output_path(),
+            workspace_root = ?workspace_layout.root,
             build_id = %self.build_id,
             "build context initialized"
         );
@@ -95,10 +198,19 @@ impl BuildOrchestrator {
         let platform = self.create_platform(&ctx)?;
         platform.validate_environment()?;
 
-        let image_engine = self.create_image_engine(&ctx)?;
+        let image_engine = LiveBuildEngine::new()
+            .with_workspace(workspace_layout.clone());
 
-        let pipeline = self.build_pipeline(&mut ctx, &*platform, &*image_engine)?;
+        let overlay_manager = OverlayManager::new(workspace_layout);
+        overlay_manager.initialize()
+            .context("Failed to initialize overlays")?;
 
+        let artifact_manager = ArtifactManager::new(workspace_layout, &self.build_id.id);
+
+        ctx.complete_stage("initialization");
+
+        let pipeline = self.build_pipeline(&mut ctx, &*platform, &image_engine)?;
+        
         let start_time = Instant::now();
         
         let completed_stages = pipeline.execute(&mut ctx)?;
@@ -114,25 +226,66 @@ impl BuildOrchestrator {
         );
 
         let artifacts = ctx.get_artifacts_sync();
+        
         if !artifacts.is_empty() {
+            self.finalize_artifacts(&artifact_manager, &artifacts, config)?;
+            
             for artifact in &artifacts {
                 stage_info!("release",
                     artifact_kind = ?artifact.kind,
                     filename = %artifact.filename(),
                     size_bytes = artifact.size,
-                    checksum = &artifact.checksum[..16],
+                    checksum = &artifact.checksum.as_ref().map(|c| &c[..16]).unwrap_or("N/A"),
                     "generated artifact"
                 );
             }
+        } else {
+            warn!(target: "lmforge_release", "no artifacts generated");
         }
 
         image_engine.cleanup(&mut ctx)?;
+
+        cleanup.cleanup_temp_files()
+            .context("Failed to cleanup temporary files")?;
+
+        Ok(())
+    }
+
+    fn finalize_artifacts(
+        &self,
+        artifact_manager: &ArtifactManager,
+        artifacts: &[crate::domain::artifact::Artifact],
+        config: &BuildConfig,
+    ) -> Result<()> {
+        info!(target: "lmforge_release", count = artifacts.len(), "finalizing artifacts");
+
+        let config_json = serde_json::to_value(config)?;
+
+        let _checksums_file = artifact_manager.generate_checksums_file(artifacts)
+            .context("Failed to generate SHA256SUMS file")?;
+
+        let _manifest_file = artifact_manager.generate_build_manifest(artifacts, &config_json)
+            .context("Failed to generate build manifest")?;
+
+        let _buildinfo = artifact_manager.generate_buildinfo()
+            .context("Failed to generate buildinfo")?;
+
+        let issues = artifact_manager.verify_integrity(artifacts)
+            .context("Failed to verify artifact integrity")?;
+
+        if !issues.is_empty() {
+            for issue in &issues {
+                warn!(target: "lmforge_release", issue = %issue, "integrity issue found");
+            }
+        }
+
+        info!(target: "lmforge_release", "artifacts finalized");
 
         Ok(())
     }
 
     fn load_config(&self, cli: &Cli) -> Result<BuildConfig> {
-        debug!(target: "lmforge_workspace", build_id = %self.build_id, "loading configuration");
+        debug!(target: "lmforge_config", build_id = %self.build_id, "loading configuration");
 
         let mut partial_config = PartialConfig::default();
 
@@ -161,15 +314,16 @@ impl BuildOrchestrator {
 
         let config = loader.merge();
 
-        debug!(target: "lmforge_workspace", "configuration loaded");
+        debug!(target: "lmforge_config", "configuration loaded");
         Ok(config)
     }
 
-    fn cleanup_workspace(&self, config: &BuildConfig) -> Result<()> {
+    fn cleanup_build_dir(&self, config: &BuildConfig) -> Result<()> {
         let _logger = RuntimeLogger::new(&self.build_id.id);
 
         if config.workspace_dir.exists() {
             std::fs::remove_dir_all(&config.workspace_dir)?;
+            debug!(target: "lmforge_cleanup", path = ?config.workspace_dir, "removed workspace directory");
         }
 
         if config.output_dir.exists() {
@@ -177,8 +331,9 @@ impl BuildOrchestrator {
                 let entry = entry?;
                 let path = entry.path();
                 
-                if path.extension().map_or(false, |ext| ext == "iso" || ext == "zst") {
+                if path.extension().map_or(false, |ext| ext == "iso" || ext == "zst" || ext == "manifest" || path.file_name().map_or(false, |n| n == "SHA256SUMS")) {
                     std::fs::remove_file(&path)?;
+                    debug!(target: "lmforge_cleanup", file = ?path, "removed old artifact");
                 }
             }
         }
@@ -186,13 +341,13 @@ impl BuildOrchestrator {
         Ok(())
     }
 
-    fn create_platform(&self, ctx: &BuildContext) -> Result<Arc<dyn Platform>> {
+    fn create_platform(&self, ctx: &BuildContext) -> Result<Box<dyn Platform>> {
         stage_info!("workspace",
             platform_name = ctx.config.platform.name,
             "creating platform instance"
         );
 
-        let platform: Arc<dyn Platform> = Arc::new(
+        let platform: Box<dyn Platform> = Box::new(
             DebianPlatform::new(ctx.suite())
                 .with_components(ctx.config.platform.components.clone())
         );
@@ -200,32 +355,19 @@ impl BuildOrchestrator {
         Ok(platform)
     }
 
-    fn create_image_engine(&self, ctx: &BuildContext) -> Result<Arc<dyn ImageEngine>> {
-        match &ctx.config.image.engine {
-            crate::domain::context::ImageEngineType::LiveBuild => {
-                stage_info!("image", engine_type = "live-build", "creating image engine");
-                
-                let engine: Arc<dyn ImageEngine> = Arc::new(
-                    LiveBuildEngine::new(ctx.workspace.temp.join("lb"))
-                );
-                Ok(engine)
-            }
-            crate::domain::context::ImageEngineType::Native => {
-                stage_error!("image", "native engine not yet implemented");
-                bail!("Native image engine is not yet implemented. Use live-build engine.");
-            }
-        }
-    }
-
     fn build_pipeline(
         &self,
-        ctx: &mut BuildContext,
+        _ctx: &mut BuildContext,
         platform: &dyn Platform,
-        image_engine: &dyn ImageEngine,
+        image_engine: &LiveBuildEngine,
     ) -> Result<Pipeline> {
         stage_info!("workspace", "building pipeline");
 
         let mut stages: Vec<Box<dyn Stage>> = Vec::new();
+
+        stages.push(Box::new(WorkspaceStage {
+            build_id: self.build_id.clone(),
+        }));
 
         stages.push(Box::new(BootstrapStage {
             platform_name: platform.name().to_string(),
@@ -256,7 +398,6 @@ impl BuildOrchestrator {
         let feature_instances = self.create_feature_instances()?;
         for feature in &feature_instances {
             feature.register_stages(&mut stages)?;
-            feature.prepare_overlay(ctx)?;
         }
 
         let pipeline = Pipeline::with_stages(stages)?;
@@ -300,6 +441,40 @@ impl BuildOrchestrator {
     }
 }
 
+struct WorkspaceStage {
+    build_id: BuildIdStruct,
+}
+
+impl Stage for WorkspaceStage {
+    fn name(&self) -> &str {
+        "workspace"
+    }
+
+    fn description(&self) -> &str {
+        "Initialize and prepare build workspace"
+    }
+
+    fn run(&self, ctx: &mut BuildContext) -> Result<()> {
+        let logger = RuntimeLogger::new(&self.build_id.id);
+        logger.log_stage_start("workspace");
+
+        let start_time = Instant::now();
+
+        stage_info!("workspace",
+            root = ?ctx.workspace.root,
+            rootfs = ?ctx.workspace.rootfs,
+            cache = ?ctx.workspace.cache,
+            temp = ?ctx.workspace.temp,
+            "workspace directories ready"
+        );
+
+        let duration = start_time.elapsed();
+        logger.log_stage_complete("workspace", duration);
+
+        Ok(())
+    }
+}
+
 struct BootstrapStage {
     platform_name: String,
     build_id: BuildIdStruct,
@@ -307,18 +482,22 @@ struct BootstrapStage {
 
 impl Stage for BootstrapStage {
     fn name(&self) -> &str {
-        "workspace"
+        "bootstrap"
     }
 
     fn description(&self) -> &str {
-        "Bootstrap base system using debootstrap"
+        "Bootstrap base system using debootstrap/mmdebstrap"
+    }
+
+    fn dependencies(&self) -> Vec<&str> {
+        vec!["workspace"]
     }
 
     fn run(&self, ctx: &mut BuildContext) -> Result<()> {
         use crate::platform::debian::DebianPlatform;
 
         let logger = RuntimeLogger::new(&self.build_id.id);
-        logger.log_stage_start("workspace");
+        logger.log_stage_start("bootstrap");
 
         let start_time = Instant::now();
 
@@ -328,7 +507,7 @@ impl Stage for BootstrapStage {
         platform.bootstrap(ctx)?;
 
         let duration = start_time.elapsed();
-        logger.log_stage_complete("workspace", duration);
+        logger.log_stage_complete("bootstrap", duration);
 
         Ok(())
     }
@@ -344,32 +523,30 @@ impl Stage for PackagesStage {
     }
 
     fn description(&self) -> &str {
-        "Install base packages into rootfs"
+        "Configure and install packages into rootfs"
     }
 
     fn dependencies(&self) -> Vec<&str> {
-        vec!["workspace"]
+        vec!["bootstrap"]
     }
 
     fn run(&self, ctx: &mut BuildContext) -> Result<()> {
-        use crate::platform::debian::DebianPlatform;
-
         let logger = RuntimeLogger::new(&self.build_id.id);
         logger.log_stage_start("packages");
 
         let start_time = Instant::now();
 
-        let packages = OverlayManager::load_package_list(&ctx.workspace.overlay)?;
+        let overlay_manager = OverlayManager::new_for_rootfs(&ctx.workspace.rootfs);
+        let packages = overlay_manager.load_package_list()?;
         
         if !packages.is_empty() {
-            let platform = DebianPlatform::new(ctx.suite());
-            let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
-            
-            platform.install_packages(ctx, &pkg_refs)?;
-            
-            stage_info!("packages", package_count = packages.len(), "installed packages");
+            stage_info!("packages",
+                package_count = packages.len(),
+                packages = ?packages,
+                "custom packages configured"
+            );
         } else {
-            debug!(target: "lmforge_packages", "no additional packages to install");
+            debug!(target: "lmforge_packages", "no custom package list found, using defaults from live-build");
         }
 
         let duration = start_time.elapsed();
@@ -389,7 +566,7 @@ impl Stage for OverlayStage {
     }
 
     fn description(&self) -> &str {
-        "Apply filesystem overlays and execute hooks"
+        "Apply filesystem overlays and branding"
     }
 
     fn dependencies(&self) -> Vec<&str> {
@@ -404,10 +581,10 @@ impl Stage for OverlayStage {
 
         stage_info!("overlay",
             overlay_dir = ?ctx.workspace.overlay,
-            "applying overlays to rootfs"
+            "applying overlays"
         );
 
-        let overlay_manager = OverlayManager::new(&ctx.workspace.rootfs);
+        let overlay_manager = OverlayManager::new_for_rootfs(&ctx.workspace.rootfs);
         overlay_manager.apply_overlays(&ctx.workspace.rootfs)?;
 
         let duration = start_time.elapsed();
@@ -428,7 +605,7 @@ impl Stage for ImageStage {
     }
 
     fn description(&self) -> &str {
-        "Generate image using live-build engine"
+        "Generate ISO image using live-build"
     }
 
     fn dependencies(&self) -> Vec<&str> {
@@ -443,18 +620,10 @@ impl Stage for ImageStage {
 
         stage_info!("image",
             engine = %self.engine_name,
-            "generating image"
+            "generating image with live-build"
         );
 
-        let image_engine = match &ctx.config.image.engine {
-            crate::domain::context::ImageEngineType::LiveBuild => {
-                Box::new(LiveBuildEngine::new(ctx.workspace.temp.join("lb"))) as Box<dyn ImageEngine>
-            }
-            crate::domain::context::ImageEngineType::Native => {
-                stage_error!("image", "native engine not yet implemented");
-                bail!("Native image engine is not yet implemented");
-            }
-        };
+        let image_engine = LiveBuildEngine::new();
 
         image_engine.prepare(ctx)?;
         let artifacts = image_engine.build(ctx)?;
@@ -463,6 +632,7 @@ impl Stage for ImageStage {
             stage_info!("image",
                 filename = %artifact.filename(),
                 kind = ?artifact.kind,
+                size_bytes = artifact.size,
                 "generated artifact"
             );
         }
@@ -484,7 +654,7 @@ impl Stage for MetadataStage {
     }
 
     fn description(&self) -> &str {
-        "Generate manifest and checksums"
+        "Generate manifest, checksums, and build metadata"
     }
 
     fn dependencies(&self) -> Vec<&str> {
@@ -538,7 +708,7 @@ impl Stage for ReleaseStage {
     }
 
     fn description(&self) -> &str {
-        "Finalize release artifacts"
+        "Finalize release and collect all artifacts"
     }
 
     fn dependencies(&self) -> Vec<&str> {

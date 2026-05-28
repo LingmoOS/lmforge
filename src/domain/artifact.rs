@@ -18,7 +18,8 @@ pub enum ArtifactKind {
 pub struct Artifact {
     pub kind: ArtifactKind,
     pub path: PathBuf,
-    pub checksum: String,
+    pub filename: String,
+    pub checksum: Option<String>,
     pub size: u64,
     pub metadata: ArtifactMetadata,
 }
@@ -41,10 +42,17 @@ impl Artifact {
         suite: &str,
         version: &str,
     ) -> Self {
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
         Artifact {
             kind,
             path,
-            checksum: String::new(),
+            filename,
+            checksum: None,
             size: 0,
             metadata: ArtifactMetadata {
                 arch: arch.to_string(),
@@ -56,8 +64,29 @@ impl Artifact {
         }
     }
 
+    pub fn placeholder() -> Self {
+        Artifact {
+            kind: ArtifactKind::Manifest,
+            path: PathBuf::new(),
+            filename: "placeholder".to_string(),
+            checksum: None,
+            size: 0,
+            metadata: ArtifactMetadata {
+                arch: String::new(),
+                suite: String::new(),
+                version: String::new(),
+                build_time: chrono::Utc::now(),
+                extra: None,
+            },
+        }
+    }
+
+    pub fn is_placeholder(&self) -> bool {
+        self.filename == "placeholder" && self.path.as_os_str().is_empty()
+    }
+
     pub fn with_checksum(mut self, checksum: impl Into<String>) -> Self {
-        self.checksum = checksum.into();
+        self.checksum = Some(checksum.into());
         self
     }
 
@@ -72,13 +101,10 @@ impl Artifact {
     }
 
     pub fn filename(&self) -> &str {
-        self.path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
+        &self.filename
     }
 
-    pub async fn compute_checksum(&mut self) -> Result<&str> {
+    pub async fn compute_checksum(&mut self) -> Result<String> {
         use tokio::io::AsyncReadExt;
         
         let mut file = tokio::fs::File::open(&self.path).await?;
@@ -94,18 +120,18 @@ impl Artifact {
         }
 
         let result = hasher.finalize();
-        self.checksum = hex::encode(result);
+        self.checksum = Some(hex::encode(result));
         
         let metadata = tokio::fs::metadata(&self.path).await?;
         self.size = metadata.len();
 
-        Ok(&self.checksum)
+        Ok(self.checksum.clone().unwrap_or_default())
     }
 
     pub fn to_manifest_entry(&self) -> String {
         format!(
             "{}  {}  {}  {}",
-            self.checksum,
+            self.checksum.as_deref().unwrap_or("none"),
             self.size,
             self.filename(),
             match &self.kind {
