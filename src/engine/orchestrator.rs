@@ -184,6 +184,8 @@ impl BuildOrchestrator {
         
         let mut ctx = BuildContext::new(config.clone())?;
         
+        ctx.workspace_layout = Some(workspace_layout.clone());
+        
         ctx.set_current_stage("initialization");
 
         stage_info!("workspace",
@@ -200,10 +202,6 @@ impl BuildOrchestrator {
 
         let image_engine = LiveBuildEngine::new()
             .with_workspace(workspace_layout.clone());
-
-        let overlay_manager = OverlayManager::new(workspace_layout);
-        overlay_manager.initialize()
-            .context("Failed to initialize overlays")?;
 
         let artifact_manager = ArtifactManager::new(workspace_layout, &self.build_id.id);
 
@@ -460,11 +458,26 @@ impl Stage for WorkspaceStage {
 
         let start_time = Instant::now();
 
+        let (root, rootfs, cache, temp) = match &ctx.workspace_layout {
+            Some(layout) => (
+                Some(layout.root.clone()),
+                Some(layout.rootfs.clone()),
+                Some(layout.cache.clone()),
+                Some(layout.temp.clone())
+            ),
+            None => (
+                Some(ctx.workspace.root.clone()),
+                Some(ctx.workspace.rootfs.clone()),
+                Some(ctx.workspace.cache.clone()),
+                Some(ctx.workspace.temp.clone())
+            )
+        };
+
         stage_info!("workspace",
-            root = ?ctx.workspace.root,
-            rootfs = ?ctx.workspace.rootfs,
-            cache = ?ctx.workspace.cache,
-            temp = ?ctx.workspace.temp,
+            root = ?root,
+            rootfs = ?rootfs,
+            cache = ?cache,
+            temp = ?temp,
             "workspace directories ready"
         );
 
@@ -536,7 +549,12 @@ impl Stage for PackagesStage {
 
         let start_time = Instant::now();
 
-        let overlay_manager = OverlayManager::new_for_rootfs(&ctx.workspace.rootfs);
+        let rootfs_path = match &ctx.workspace_layout {
+            Some(layout) => layout.rootfs.clone(),
+            None => ctx.workspace.rootfs.clone()
+        };
+
+        let overlay_manager = OverlayManager::new_for_rootfs(&rootfs_path);
         let packages = overlay_manager.load_package_list()?;
         
         if !packages.is_empty() {
@@ -579,13 +597,34 @@ impl Stage for OverlayStage {
 
         let start_time = Instant::now();
 
+        let overlay_dir = match &ctx.workspace_layout {
+            Some(layout) => layout.overlay.clone(),
+            None => ctx.workspace.overlay.clone()
+        };
+
         stage_info!("overlay",
-            overlay_dir = ?ctx.workspace.overlay,
+            overlay_dir = ?overlay_dir,
             "applying overlays"
         );
 
-        let overlay_manager = OverlayManager::new_for_rootfs(&ctx.workspace.rootfs);
-        overlay_manager.apply_overlays(&ctx.workspace.rootfs)?;
+        match &ctx.workspace_layout {
+            Some(layout) => {
+                let overlay_manager = OverlayManager::new(layout);
+                
+                overlay_manager.initialize()
+                    .context("Failed to initialize overlays")?;
+                
+                let lb_config = layout.livebuild_config();
+                
+                if lb_config.exists() || layout.config.exists() {
+                    overlay_manager.apply_to_livebuild(&lb_config)?;
+                    info!(target: "lmforge_overlay", "overlays applied to live-build config");
+                }
+            }
+            None => {
+                warn!(target: "lmforge_overlay", "no workspace layout available, skipping overlay application");
+            }
+        }
 
         let duration = start_time.elapsed();
         logger.log_stage_complete("overlay", duration);
@@ -623,7 +662,13 @@ impl Stage for ImageStage {
             "generating image with live-build"
         );
 
-        let image_engine = LiveBuildEngine::new();
+        let image_engine = match &ctx.workspace_layout {
+            Some(layout) => LiveBuildEngine::new().with_workspace(layout.clone()),
+            None => {
+                warn!(target: "lmforge_image", "no workspace layout available, using default paths");
+                LiveBuildEngine::new()
+            }
+        };
 
         image_engine.prepare(ctx)?;
         let artifacts = image_engine.build(ctx)?;

@@ -5,11 +5,9 @@ use serde::{Deserialize, Serialize};
 use super::context::BuildConfig;
 
 const BUILTIN_CONFIG: &str = r#"
-[arch]
-default = "amd64"
-
-[suite]
-default = "bookworm"
+arch = "amd64"
+suite = "bookworm"
+version = "1.0.0"
 
 [platform]
 name = "debian"

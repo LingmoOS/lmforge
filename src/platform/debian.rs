@@ -63,19 +63,34 @@ impl Platform for DebianPlatform {
     }
 
     fn bootstrap(&self, ctx: &mut BuildContext) -> Result<()> {
+        let rootfs_path = match &ctx.workspace_layout {
+            Some(layout) => layout.rootfs.clone(),
+            None => ctx.workspace.rootfs.clone()
+        };
+
         info!(
             "Bootstrapping Debian {} ({}) into {:?}",
             self.suite,
             ctx.arch(),
-            ctx.workspace.rootfs
+            rootfs_path
         );
 
-        if ctx.workspace.rootfs.exists() && ctx.workspace.rootfs.read_dir()?.next().is_some() {
+        if rootfs_path.exists() && rootfs_path.read_dir()?.next().is_some() {
             debug!("Rootfs already bootstrapped, skipping");
             return Ok(());
         }
 
-        let args = self.get_bootstrap_command_args(ctx, None);
+        std::fs::create_dir_all(&rootfs_path)?;
+
+        let args = vec![
+            "--arch".to_string(),
+            ctx.arch().to_string(),
+            "--variant".to_string(),
+            "minbase".to_string(),
+            ctx.suite().to_string(),
+            rootfs_path.to_string_lossy().to_string(),
+            self.get_mirror_url().to_string(),
+        ];
 
         let output = {
             let rt = tokio::runtime::Runtime::new()?;
@@ -83,7 +98,6 @@ impl Platform for DebianPlatform {
                 Executor::execute(
                     &ProcessConfig::new(self.bootstrap_command())
                         .args(args)
-                        .working_dir(&ctx.workspace.temp)
                 ).await
             })?
         };
@@ -94,7 +108,7 @@ impl Platform for DebianPlatform {
                 
                 let rt = tokio::runtime::Runtime::new()?;
                 rt.block_on(async {
-                    Mount::mount_all_for_chroot(&ctx.workspace.rootfs).await
+                    Mount::mount_all_for_chroot(&rootfs_path).await
                 })?;
                 
                 Ok(())
@@ -110,6 +124,11 @@ impl Platform for DebianPlatform {
     }
 
     fn install_packages(&self, ctx: &mut BuildContext, packages: &[&str]) -> Result<()> {
+        let rootfs_path = match &ctx.workspace_layout {
+            Some(layout) => layout.rootfs.clone(),
+            None => ctx.workspace.rootfs.clone()
+        };
+
         info!("Installing packages: {:?}", packages);
 
         let mut args = vec![
@@ -128,7 +147,7 @@ impl Platform for DebianPlatform {
             rt.block_on(async {
                 Executor::execute(
                     &ProcessConfig::new("chroot")
-                        .arg(&ctx.workspace.rootfs)
+                        .arg(&rootfs_path)
                         .args(args)
                         .env("DEBIAN_FRONTEND", "noninteractive")
                 ).await
@@ -150,13 +169,18 @@ impl Platform for DebianPlatform {
     }
 
     fn generate_repo_metadata(&self, ctx: &mut BuildContext) -> Result<()> {
+        let rootfs_path = match &ctx.workspace_layout {
+            Some(layout) => layout.rootfs.clone(),
+            None => ctx.workspace.rootfs.clone()
+        };
+
         info!("Generating repository metadata");
 
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
             Executor::execute_success(
                 &ProcessConfig::new("chroot")
-                    .arg(&ctx.workspace.rootfs)
+                    .arg(&rootfs_path)
                     .args(["apt-get", "update"])
             ).await
         })?;

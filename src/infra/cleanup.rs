@@ -4,6 +4,7 @@ use tracing::{info, debug, warn, error};
 use chrono::Utc;
 
 use crate::infra::workspace::{WorkspaceManager, WorkspaceLayout, InterruptedBuild};
+use crate::runtime::{process::{Executor, ProcessConfig}};
 
 pub struct CleanupRecovery {
     workspace_manager: WorkspaceManager,
@@ -211,45 +212,91 @@ status: in_progress
     }
 
     fn unmount_all_mounts(&self, workspace_root: &Path) -> Result<()> {
-        let mount_points = [
+        info!(target: "lmforge_cleanup", "unmounting all mounts from workspace");
+
+        let mount_points = vec![
             workspace_root.join("rootfs/proc"),
             workspace_root.join("rootfs/sys"),
+            workspace_root.join("rootfs/dev/pts"),
             workspace_root.join("rootfs/dev"),
             workspace_root.join("rootfs/run"),
             workspace_root.join("chroot/proc"),
             workspace_root.join("chroot/sys"),
+            workspace_root.join("chroot/dev/pts"),
             workspace_root.join("chroot/dev"),
+            workspace_root.join("chroot/run"),
         ];
 
         for mount_point in &mount_points {
             if mount_point.exists() {
-                debug!(target: "lmforge_cleanup", mount = ?mount_point, "attempting unmount");
+                self.try_unmount(mount_point)?;
+            }
+        }
 
-                let rt = tokio::runtime::Runtime::new();
+        info!(target: "lmforge_cleanup", "all mounts unmounted");
+        Ok(())
+    }
+
+    fn try_unmount(&self, mount_point: &Path) -> Result<()> {
+        debug!(target: "lmforge_cleanup", mount = ?mount_point, "attempting to unmount");
+
+        let rt = tokio::runtime::Runtime::new();
+        
+        match rt {
+            Ok(rt) => {
+                use crate::runtime::mount::Mount;
                 
-                match rt {
-                    Ok(rt) => {
-                        use crate::runtime::mount::Mount;
-                        let result = rt.block_on(async {
-                            Mount::unmount(mount_point).await
-                        });
+                let result = rt.block_on(async {
+                    Mount::unmount(mount_point).await
+                });
 
-                        if let Err(e) = result {
-                            debug!(
-                                target: "lmforge_cleanup",
-                                mount = ?mount_point,
-                                error = %e,
-                                "unmount failed (may not be mounted)"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
+                if let Err(e) = result {
+                    warn!(
+                        target: "lmforge_cleanup",
+                        mount = ?mount_point,
+                        error = %e,
+                        "unmount failed, trying lazy unmount"
+                    );
+                    
+                    let lazy_result = rt.block_on(async {
+                        Executor::execute(
+                            &ProcessConfig::new("umount")
+                                .arg("-l")
+                                .arg(mount_point)
+                        ).await
+                    });
+
+                    if let Err(e2) = lazy_result {
+                        debug!(
                             target: "lmforge_cleanup",
-                            error = %e,
-                            "failed to create runtime for unmounting"
+                            mount = ?mount_point,
+                            error = %e2,
+                            "lazy unmount also failed (may not be mounted)"
                         );
                     }
+                } else {
+                    debug!(target: "lmforge_cleanup", mount = ?mount_point, "unmounted successfully");
+                }
+            }
+            Err(e) => {
+                warn!(
+                    target: "lmforge_cleanup",
+                    error = %e,
+                    "failed to create runtime for unmounting"
+                );
+                
+                let umount_result = std::process::Command::new("umount")
+                    .arg("-l")
+                    .arg(mount_point)
+                    .output();
+                
+                if let Err(e) = umount_result {
+                    debug!(
+                        target: "lmforge_cleanup",
+                        mount = ?mount_point,
+                        error = %e,
+                        "fallback unmount failed"
+                    );
                 }
             }
         }
@@ -258,14 +305,57 @@ status: in_progress
     }
 
     fn remove_directory_recursive(&self, path: &Path) -> Result<()> {
-        if path.exists() {
-            std::fs::remove_dir_all(path)
-                .with_context(|| format!("Failed to remove directory: {:?}", path))?;
-            
-            debug!(target: "lmforge_cleanup", path = ?path, "directory removed");
+        if !path.exists() {
+            debug!(target: "lmforge_cleanup", path = ?path, "directory does not exist");
+            return Ok(());
         }
 
-        Ok(())
+        info!(target: "lmforge_cleanup", path = ?path, "removing directory");
+
+        let mut attempts = 0;
+        const MAX_ATTEMPTS: u32 = 3;
+
+        loop {
+            attempts += 1;
+            
+            match std::fs::remove_dir_all(path) {
+                Ok(_) => {
+                    info!(target: "lmforge_cleanup", path = ?path, attempts = attempts, "directory removed successfully");
+                    return Ok(());
+                }
+                Err(e) => {
+                    if attempts < MAX_ATTEMPTS {
+                        warn!(
+                            target: "lmforge_cleanup",
+                            path = ?path,
+                            attempt = attempts,
+                            error = %e,
+                            "failed to remove directory, retrying..."
+                        );
+                        
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        
+                        self.unmount_all_mounts(path)?;
+                    } else {
+                        error!(
+                            target: "lmforge_cleanup",
+                            path = ?path,
+                            attempts = attempts,
+                            error = %e,
+                            "failed to remove directory after {} attempts",
+                            MAX_ATTEMPTS
+                        );
+                        
+                        return Err(anyhow::anyhow!(
+                            "Failed to remove directory {:?} after {} attempts: {}",
+                            path,
+                            MAX_ATTEMPTS,
+                            e
+                        ));
+                    }
+                }
+            }
+        }
     }
 
     pub fn mark_completed(&self) -> Result<()> {

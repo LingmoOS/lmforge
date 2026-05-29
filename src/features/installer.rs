@@ -67,7 +67,12 @@ impl Feature for InstallerFeature {
     fn prepare_overlay(&self, ctx: &mut BuildContext) -> Result<()> {
         info!("Preparing installer overlay");
 
-        let overlay_dir = ctx.workspace.overlay.join("installer");
+        let overlay_base = match &ctx.workspace_layout {
+            Some(layout) => layout.overlay.clone(),
+            None => ctx.workspace.overlay.clone()
+        };
+
+        let overlay_dir = overlay_base.join("installer");
         std::fs::create_dir_all(&overlay_dir)?;
 
         let config_dir = overlay_dir.join("config");

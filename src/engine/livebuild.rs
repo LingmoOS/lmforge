@@ -414,13 +414,18 @@ impl ImageEngine for LiveBuildEngine {
             }
         }
 
-        if ctx.workspace.rootfs.exists() {
-            info!(target: "lmforge_livebuild", rootfs = ?ctx.workspace.rootfs, "unmounting rootfs mounts");
+        let rootfs_path = match &ctx.workspace_layout {
+            Some(layout) => layout.rootfs.clone(),
+            None => ctx.workspace.rootfs.clone()
+        };
+
+        if rootfs_path.exists() {
+            info!(target: "lmforge_livebuild", rootfs = ?rootfs_path, "unmounting rootfs mounts");
 
             let unmount_result = {
                 let rt = tokio::runtime::Runtime::new()?;
                 rt.block_on(async {
-                    Mount::unmount_all_from_chroot(&ctx.workspace.rootfs).await
+                    Mount::unmount_all_from_chroot(&rootfs_path).await
                 })
             };
 

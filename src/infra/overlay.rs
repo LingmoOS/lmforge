@@ -54,14 +54,17 @@ impl OverlayManager {
             .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available"))?;
 
         let branding_dir = workspace.overlay.join("branding");
+        let branding_etc_dir = branding_dir.join("etc");
+        
+        std::fs::create_dir_all(&branding_etc_dir)?;
 
         let issue_content = r#"Lingmo Linux Live \n \l
 "#;
-        std::fs::write(branding_dir.join("etc/issue"), issue_content)?;
+        std::fs::write(branding_etc_dir.join("issue"), issue_content)?;
 
         let issue_net_content = r#"Lingmo Linux Live (\n) (\l)
 "#;
-        std::fs::write(branding_dir.join("etc/issue.net"), issue_net_content)?;
+        std::fs::write(branding_etc_dir.join("issue.net"), issue_net_content)?;
 
         let os_release_content = r#"PRETTY_NAME="Lingmo Linux"
 NAME="Lingmo Linux"
@@ -73,7 +76,7 @@ HOME_URL="https://www.lingmo.org"
 SUPPORT_URL="https://www.lingmo.org/support"
 BUG_REPORT_URL="https://bugs.lingmo.org"
 "#;
-        std::fs::write(branding_dir.join("etc/os-release"), os_release_content)?;
+        std::fs::write(branding_etc_dir.join("os-release"), os_release_content)?;
 
         debug!(target: "lmforge_overlay", "created default branding files");
 

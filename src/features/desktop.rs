@@ -99,7 +99,12 @@ impl Feature for DesktopFeature {
     fn prepare_overlay(&self, ctx: &mut BuildContext) -> Result<()> {
         info!("Preparing desktop overlay");
 
-        let overlay_dir = ctx.workspace.overlay.join("desktop");
+        let overlay_base = match &ctx.workspace_layout {
+            Some(layout) => layout.overlay.clone(),
+            None => ctx.workspace.overlay.clone()
+        };
+
+        let overlay_dir = overlay_base.join("desktop");
         std::fs::create_dir_all(&overlay_dir)?;
 
         let branding_dir = overlay_dir.join("branding");

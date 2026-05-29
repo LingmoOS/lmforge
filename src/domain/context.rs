@@ -4,6 +4,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use super::artifact::Artifact;
+use crate::infra::workspace::WorkspaceLayout;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildConfig {
@@ -63,6 +64,7 @@ impl Default for BuildConfig {
 pub struct BuildContext {
     pub config: Arc<BuildConfig>,
     pub workspace: Workspace,
+    pub workspace_layout: Option<WorkspaceLayout>,
     pub artifacts: Arc<RwLock<Vec<Artifact>>>,
     pub runtime_state: RuntimeState,
     pub logs: Arc<RwLock<Vec<LogEntry>>>,
@@ -111,6 +113,7 @@ impl BuildContext {
         Ok(BuildContext {
             config,
             workspace,
+            workspace_layout: None,
             artifacts: Arc::new(RwLock::new(Vec::new())),
             runtime_state: RuntimeState::default(),
             logs: Arc::new(RwLock::new(Vec::new())),
