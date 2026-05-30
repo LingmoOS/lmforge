@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use anyhow::{Result, bail};
 use tracing::{info, warn, debug, error};
 
@@ -7,21 +8,38 @@ use crate::domain::context::BuildContext;
 use crate::domain::artifact::{Artifact, ArtifactKind};
 use crate::runtime::process::{Executor, ProcessConfig};
 use crate::runtime::mount::Mount;
+use crate::runtime::MountManager;
+use crate::runtime::log_stream::{StreamDispatcher, LogFileWriter, LogLevel};
 use crate::infra::workspace::WorkspaceLayout;
+use crate::infra::overlay::OverlayManager;
 
 pub struct LiveBuildEngine {
     workspace: Option<WorkspaceLayout>,
+    mount_manager: Option<Arc<MountManager>>,
+    log_level: LogLevel,
 }
 
 impl LiveBuildEngine {
     pub fn new() -> Self {
         LiveBuildEngine {
             workspace: None,
+            mount_manager: None,
+            log_level: LogLevel::default(),
         }
     }
 
     pub fn with_workspace(mut self, layout: WorkspaceLayout) -> Self {
         self.workspace = Some(layout);
+        self
+    }
+
+    pub fn with_mount_manager(mut self, manager: Arc<MountManager>) -> Self {
+        self.mount_manager = Some(manager);
+        self
+    }
+
+    pub fn with_log_level(mut self, level: LogLevel) -> Self {
+        self.log_level = level;
         self
     }
 
@@ -59,6 +77,22 @@ impl LiveBuildEngine {
         info!(target: "lmforge_livebuild", config_dir = ?lb_config, "generating live-build configuration");
         
         std::fs::create_dir_all(&lb_config)?;
+        
+        if let Some(workspace_layout) = &self.workspace {
+            info!(target: "lmforge_livebuild", stage = "overlay", "initializing OverlayManager for V1 architecture");
+            
+            let overlay_manager = OverlayManager::new(workspace_layout);
+            
+            overlay_manager.initialize()?;
+            
+            info!(target: "lmforge_livebuild", stage = "overlay", "synchronizing overlays to live-build configuration");
+            
+            overlay_manager.sync_to_livebuild(&lb_config, ctx)?;
+            
+            info!(target: "lmforge_livebuild", stage = "overlay", "overlay synchronization completed");
+        } else {
+            warn!(target: "lmforge_livebuild", "no workspace layout available, using built-in configuration");
+        }
         
         self.write_auto_config(&lb_config, ctx)?;
         self.create_package_lists(&lb_config, ctx)?;
@@ -223,28 +257,60 @@ echo "Post-build hook completed"
             "executing live-build command"
         );
 
+        let log_level = self.log_level.clone();
+        
+        let log_dir = Path::new("logs");
+        let log_writer = Arc::new(Mutex::new(
+            LogFileWriter::new(log_dir, command)?
+        ));
+        
+        {
+            let mut writer = log_writer.lock().unwrap();
+            writer.write_header("lb", &full_args)?;
+        }
+
+        let mut dispatcher = StreamDispatcher::new(log_level, command)
+            .with_log_writer(log_writer);
+
+        dispatcher.update_status(&format!("Running lb {}", command));
+
         let config = ProcessConfig::new("lb")
             .arg(command)
             .args(args)
             .working_dir(working_dir)
             .timeout(std::time::Duration::from_secs(timeout_secs))
-            .with_build_id("livebuild");
+            .with_build_id("livebuild")
+            .with_stage_name("image");
 
         let output = {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {
-                Executor::execute_success(&config).await
+                Executor::execute_streaming(&config, &mut dispatcher).await
             })?
         };
 
-        debug!(
+        if !output.success {
+            error!(
+                target: "lmforge_livebuild",
+                command = command,
+                exit_code = ?output.exit_code,
+                "live-build command failed"
+            );
+            
+            bail!(
+                "lb {} failed:\nSee: logs/image.log",
+                command
+            );
+        }
+
+        info!(
             target: "lmforge_livebuild",
             command = command,
-            stdout_len = output.len(),
+            stdout_len = output.stdout.len(),
             "command completed successfully"
         );
 
-        Ok(output)
+        Ok(output.stdout)
     }
 
     fn collect_artifacts(&self, ctx: &BuildContext, lb_output_dir: &Path) -> Result<Vec<Artifact>> {

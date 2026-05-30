@@ -64,7 +64,8 @@ impl BuildCommand {
             .with_target(&self.target)
             .with_profile(self.profile.as_deref())
             .with_features(features)
-            .with_clean(self.clean);
+            .with_clean(self.clean)
+            .with_log_level(cli.get_log_level());
 
         orchestrator.run(cli)?;
 

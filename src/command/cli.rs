@@ -12,8 +12,11 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
-    #[arg(short, long, global = true)]
-    pub verbose: bool,
+    #[arg(short = 'v', long, global = true, action = clap::ArgAction::Count, help = "Increase verbosity (-v=verbose, -vv=detailed, -vvv=trace)")]
+    pub verbose: u8,
+
+    #[arg(short = 'L', long = "log-level", global = true, value_name = "LEVEL", help = "Set log level (0=silent, 1=normal, 2=verbose, 3=detailed, 4=trace, 5=debug)")]
+    pub log_level: Option<u8>,
 
     #[arg(long, global = true)]
     pub config: Option<std::path::PathBuf>,
@@ -88,6 +91,22 @@ impl Cli {
             Commands::Config(cmd) => self.execute_config_command(cmd)?,
         }
         Ok(())
+    }
+
+    pub fn get_log_level(&self) -> crate::runtime::log_stream::LogLevel {
+        use crate::runtime::log_stream::LogLevel;
+        
+        if let Some(level) = self.log_level {
+            LogLevel::from_int(level)
+        } else if self.verbose > 0 {
+            match self.verbose {
+                1 => LogLevel::Verbose,
+                2 => LogLevel::Detailed,
+                _ => LogLevel::Trace,
+            }
+        } else {
+            LogLevel::Debug
+        }
     }
 
     fn execute_repo_command(&self, _cmd: &RepoCommand) -> Result<()> {

@@ -17,6 +17,9 @@ components = ["main", "contrib", "non-free"]
 engine = "livebuild"
 iso_name = "lingmo-live.iso"
 volume_id = "Lingmo Live"
+
+[logging]
+level = 5
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +48,12 @@ pub struct PartialConfig {
     pub features: Option<Vec<String>>,
     pub platform: Option<PartialPlatformConfig>,
     pub image: Option<PartialImageConfig>,
+    pub logging: Option<PartialLoggingConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PartialLoggingConfig {
+    pub level: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

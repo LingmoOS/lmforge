@@ -3,6 +3,7 @@ use anyhow::Result;
 use chrono::Utc;
 use tracing::{info, debug, warn};
 
+#[derive(Clone)]
 pub struct WorkspaceManager {
     base_dir: PathBuf,
     build_id: String,

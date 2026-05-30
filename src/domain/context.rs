@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::{Serialize, Deserialize};
 
-use super::artifact::Artifact;
+use crate::domain::artifact::Artifact;
 use crate::infra::workspace::WorkspaceLayout;
+use crate::runtime::MountManager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildConfig {
@@ -68,6 +69,8 @@ pub struct BuildContext {
     pub artifacts: Arc<RwLock<Vec<Artifact>>>,
     pub runtime_state: RuntimeState,
     pub logs: Arc<RwLock<Vec<LogEntry>>>,
+    pub mount_manager: Option<Arc<MountManager>>,
+    pub log_level: crate::runtime::log_stream::LogLevel,
 }
 
 #[derive(Debug, Clone)]
@@ -106,7 +109,7 @@ pub enum LogLevel {
 }
 
 impl BuildContext {
-    pub fn new(config: BuildConfig) -> Result<Self> {
+    pub fn new(config: BuildConfig, log_level: crate::runtime::log_stream::LogLevel) -> Result<Self> {
         let config = Arc::new(config);
         let workspace = Self::create_workspace(&config)?;
         
@@ -117,6 +120,8 @@ impl BuildContext {
             artifacts: Arc::new(RwLock::new(Vec::new())),
             runtime_state: RuntimeState::default(),
             logs: Arc::new(RwLock::new(Vec::new())),
+            mount_manager: None,
+            log_level,
         })
     }
 

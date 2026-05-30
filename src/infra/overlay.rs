@@ -3,37 +3,58 @@ use anyhow::{Result, Context};
 use tracing::{info, debug, warn};
 
 use crate::infra::workspace::WorkspaceLayout;
+use crate::domain::context::BuildContext;
 
 pub struct OverlayManager {
     workspace: Option<WorkspaceLayout>,
-    rootfs_path: Option<PathBuf>,
+    packages: Vec<String>,
+    custom_hooks: Vec<PathBuf>,
+    includes_files: Vec<PathBuf>,
 }
 
 impl OverlayManager {
     pub fn new(workspace: &WorkspaceLayout) -> Self {
         OverlayManager {
             workspace: Some(workspace.clone()),
-            rootfs_path: None,
+            packages: Vec::new(),
+            custom_hooks: Vec::new(),
+            includes_files: Vec::new(),
         }
     }
 
-    pub fn new_for_rootfs(rootfs: &Path) -> Self {
-        OverlayManager {
-            workspace: None,
-            rootfs_path: Some(rootfs.to_path_buf()),
-        }
+    pub fn with_packages(mut self, packages: &[&str]) -> Self {
+        self.packages = packages.iter().map(|p| p.to_string()).collect();
+        self
+    }
+
+    pub fn add_package(mut self, package: &str) -> Self {
+        self.packages.push(package.to_string());
+        self
+    }
+
+    pub fn add_hook(mut self, hook_path: &Path) -> Self {
+        self.custom_hooks.push(hook_path.to_path_buf());
+        self
+    }
+
+    pub fn add_includes_file(mut self, file_path: &Path) -> Self {
+        self.includes_files.push(file_path.to_path_buf());
+        self
     }
 
     pub fn initialize(&self) -> Result<()> {
         let workspace = self.workspace.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available. Use new_for_rootfs for simple operations."))?;
+            .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available"))?;
 
-        info!(target: "lmforge_overlay", "initializing overlay directories");
+        info!(target: "lmforge_overlay", "initializing overlay directories for V1 live-build integration");
 
         let dirs = [
+            ("package-lists", workspace.overlay.join("package-lists")),
+            ("includes.chroot", workspace.overlay.join("includes.chroot")),
+            ("hooks/chroot", workspace.overlay.join("hooks").join("chroot")),
+            ("hooks/binary", workspace.overlay.join("hooks").join("binary")),
             ("filesystem", workspace.overlay.join("filesystem")),
             ("branding", workspace.overlay.join("branding")),
-            ("hooks", workspace.overlay.join("hooks")),
         ];
 
         for (name, path) in &dirs {
@@ -43,9 +64,63 @@ impl OverlayManager {
             debug!(target: "lmforge_overlay", directory = ?path, name = name, "created overlay directory");
         }
 
+        self.create_default_package_list()?;
         self.create_default_branding()?;
         
-        info!(target: "lmforge_overlay", "overlay directories initialized");
+        info!(target: "lmforge_overlay", "overlay directories initialized for V1 architecture");
+        Ok(())
+    }
+
+    fn create_default_package_list(&self) -> Result<()> {
+        let workspace = self.workspace.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available"))?;
+
+        let pkg_list_dir = workspace.overlay.join("package-lists");
+        std::fs::create_dir_all(&pkg_list_dir)?;
+
+        let default_packages = r#"# Lingmo Linux - Default Package List
+# V1 Architecture: Packages installed via live-build
+
+# Live system essentials
+linux-image-amd64
+live-boot
+live-config
+live-config-systemd
+syslinux-common
+pxelinux
+
+# Desktop environment (optional)
+# task-xfce-desktop
+
+# Network tools
+network-manager
+wpasupplicant
+wireless-tools
+
+# Filesystems support
+dosfstools
+ntfs-3g
+exfat-fuse
+
+# System utilities
+sudo
+usersetup
+locales
+keyboard-configuration
+console-setup
+
+# Additional tools
+vim-tiny
+less
+man-db
+"#;
+
+        let pkg_list_file = pkg_list_dir.join("lingmo-packages.list.chroot");
+        if !pkg_list_file.exists() {
+            std::fs::write(&pkg_list_file, default_packages)?;
+            debug!(target: "lmforge_overlay", file = ?pkg_list_file, "created default package list");
+        }
+
         Ok(())
     }
 
@@ -83,184 +158,269 @@ BUG_REPORT_URL="https://bugs.lingmo.org"
         Ok(())
     }
 
-    pub fn apply_to_livebuild(&self, lb_config: &Path) -> Result<()> {
+    pub fn sync_to_livebuild(&self, lb_config: &Path, ctx: &BuildContext) -> Result<()> {
         info!(
             target: "lmforge_overlay",
             lb_config = ?lb_config,
-            "applying overlays to live-build configuration"
+            stage = "sync",
+            "V1 Phase: Synchronizing overlays to live-build configuration"
         );
 
-        let includes_chroot = lb_config.join("config").join("includes.chroot");
-        std::fs::create_dir_all(&includes_chroot)?;
+        let config_dir = lb_config.join("config");
+        std::fs::create_dir_all(&config_dir)?;
 
-        self.apply_filesystem_overlay(&includes_chroot)?;
-        self.apply_branding_overlay(&includes_chroot)?;
-        self.copy_package_list(lb_config)?;
-        self.install_hooks(lb_config)?;
-
-        info!(target: "lmforge_overlay", "overlays applied to live-build configuration");
-        Ok(())
-    }
-
-    pub fn apply_overlays(&self, rootfs: &Path) -> Result<()> {
-        let workspace = self.workspace.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available for apply_overlays"))?;
+        self.sync_package_lists(&config_dir)?;
+        self.sync_includes_chroot(&config_dir)?;
+        self.sync_hooks(&config_dir)?;
+        self.sync_customizations(ctx, &config_dir)?;
 
         info!(
             target: "lmforge_overlay",
-            overlay_name = "rootfs",
-            target = %rootfs.display(),
-            "applying overlays to rootfs"
+            stage = "sync",
+            "Overlay synchronization completed successfully"
         );
-
-        if workspace.overlay.join("filesystem").exists() {
-            self.copy_recursive(&workspace.overlay.join("filesystem"), rootfs)?;
-            debug!(target: "lmforge_overlay", "copied filesystem overlay");
-        }
 
         Ok(())
     }
 
-    fn apply_filesystem_overlay(&self, target: &Path) -> Result<()> {
+    fn sync_package_lists(&self, config_dir: &Path) -> Result<()> {
         let workspace = self.workspace.as_ref()
             .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available"))?;
 
-        let filesystem_source = workspace.overlay.join("filesystem");
-
-        if !filesystem_source.exists() {
-            debug!(target: "lmforge_overlay", "no filesystem overlay found, skipping");
-            return Ok(());
-        }
-
-        info!(
-            target: "lmforge_overlay",
-            source = ?filesystem_source,
-            target = ?target,
-            "applying filesystem overlay"
-        );
-
-        self.copy_recursive(&filesystem_source, target)?;
-
-        Ok(())
-    }
-
-    fn apply_branding_overlay(&self, target: &Path) -> Result<()> {
-        let workspace = self.workspace.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available"))?;
-
-        let branding_source = workspace.overlay.join("branding");
-
-        if !branding_source.exists() {
-            debug!(target: "lmforge_overlay", "no branding overlay found, skipping");
-            return Ok(());
-        }
-
-        info!(
-            target: "lmforge_overlay",
-            source = ?branding_source,
-            target = ?target,
-            "applying branding overlay"
-        );
-
-        self.merge_directory(&branding_source, target)?;
-
-        Ok(())
-    }
-
-    fn copy_package_list(&self, lb_config: &Path) -> Result<()> {
-        let workspace = self.workspace.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available"))?;
-
-        let packages_list_path = workspace.overlay.join("packages.list");
-        
-        if !packages_list_path.exists() {
-            debug!(target: "lmforge_overlay", "no custom package list found, skipping");
-            return Ok(());
-        }
-
-        let lists_dir = lb_config.join("config").join("package-lists");
+        let lists_dir = config_dir.join("package-lists");
         std::fs::create_dir_all(&lists_dir)?;
 
-        let content = std::fs::read_to_string(&packages_list_path)
-            .context("Failed to read packages.list")?;
+        let source_pkg_dir = workspace.overlay.join("package-lists");
 
-        if content.trim().is_empty() {
-            debug!(target: "lmforge_overlay", "package list is empty, skipping");
-            return Ok(());
+        if source_pkg_dir.exists() {
+            for entry in std::fs::read_dir(&source_pkg_dir)? {
+                let entry = entry?;
+                let src_file = entry.path();
+                
+                if src_file.is_file() && src_file.extension().map(|e| e == "chroot" || e == "list").unwrap_or(false) {
+                    let filename = src_file.file_name()
+                        .context("Invalid package list filename")?
+                        .to_string_lossy()
+                        .to_string();
+                    
+                    let dest_file = lists_dir.join(&filename);
+                    
+                    std::fs::copy(&src_file, &dest_file)
+                        .with_context(|| format!("Failed to copy package list {:?} to {:?}", src_file, dest_file))?;
+
+                    debug!(
+                        target: "lmforge_overlay",
+                        file = %filename,
+                        dest = ?dest_file,
+                        "synced package list to live-build"
+                    );
+                }
+            }
+        } else {
+            warn!(target: "lmforge_overlay", "no package-lists directory found in overlay");
         }
 
-        let dest_file = lists_dir.join("custom-packages.list.chroot");
-        std::fs::write(&dest_file, content)
-            .with_context(|| format!("Failed to write package list to {:?}", dest_file))?;
-
-        info!(
-            target: "lmforge_overlay",
-            file = ?packages_list_path,
-            dest = ?dest_file,
-            "copied custom package list"
-        );
+        info!(target: "lmforge_overlay", "package lists synchronized");
 
         Ok(())
     }
 
-    fn install_hooks(&self, lb_config: &Path) -> Result<()> {
+    fn sync_includes_chroot(&self, config_dir: &Path) -> Result<()> {
         let workspace = self.workspace.as_ref()
             .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available"))?;
 
-        let hooks_source = workspace.overlay.join("hooks");
+        let includes_chroot = config_dir.join("includes.chroot");
+        std::fs::create_dir_all(&includes_chroot)?;
 
-        if !hooks_source.exists() {
-            debug!(target: "lmforge_overlay", "no custom hooks found, skipping");
-            return Ok(());
-        }
+        let overlay_sources = [
+            ("filesystem", workspace.overlay.join("filesystem")),
+            ("branding", workspace.overlay.join("branding")),
+        ];
 
-        let hooks_dest = lb_config.join("config").join("hooks");
-        std::fs::create_dir_all(&hooks_dest)?;
-
-        for entry in std::fs::read_dir(&hooks_source)? {
-            let entry = entry?;
-            let source_path = entry.path();
-            
-            if source_path.is_file() && source_path.extension().map(|e| e == "chroot").unwrap_or(false) {
-                let filename = source_path.file_name()
-                    .context("Invalid hook filename")?
-                    .to_string_lossy()
-                    .to_string();
-                
-                let dest_path = hooks_dest.join(&filename);
-                
-                std::fs::copy(&source_path, &dest_path)
-                    .with_context(|| format!("Failed to copy hook {:?} to {:?}", source_path, dest_path))?;
-
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = std::fs::metadata(&dest_path)?.permissions();
-                    perms.set_mode(0o755);
-                    std::fs::set_permissions(&dest_path, perms)?;
-                }
-
+        for (name, source) in &overlay_sources {
+            if source.exists() {
+                self.copy_recursive(source, &includes_chroot)?;
                 debug!(
                     target: "lmforge_overlay",
-                    hook = %filename,
-                    dest = ?dest_path,
-                    "installed hook"
+                    overlay_name = name,
+                    source = ?source,
+                    "synced include files"
                 );
             }
         }
 
-        info!(target: "lmforge_overlay", "hooks installed");
+        for custom_file in &self.includes_files {
+            if custom_file.exists() {
+                let filename = custom_file.file_name()
+                    .context("Invalid custom includes filename")?
+                    .to_string_lossy()
+                    .to_string();
+                
+                let dest_path = includes_chroot.join(&filename);
+                
+                std::fs::copy(custom_file, &dest_path)
+                    .with_context(|| format!("Failed to copy custom include {:?} to {:?}", custom_file, dest_path))?;
+
+                debug!(
+                    target: "lmforge_overlay",
+                    file = %filename,
+                    "synced custom include file"
+                );
+            }
+        }
+
+        info!(target: "lmforge_overlay", "includes.chroot synchronized");
+
+        Ok(())
+    }
+
+    fn sync_hooks(&self, config_dir: &Path) -> Result<()> {
+        let workspace = self.workspace.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available"))?;
+
+        let hook_types = [
+            ("hooks/chroot", "chroot"),
+            ("hooks/binary", "binary"),
+        ];
+
+        for (source_rel, hook_type) in &hook_types {
+            let hooks_source = workspace.overlay.join(source_rel);
+            let hooks_dest = config_dir.join("hooks");
+
+            if !hooks_source.exists() {
+                continue;
+            }
+
+            std::fs::create_dir_all(&hooks_dest)?;
+
+            for entry in std::fs::read_dir(&hooks_source)? {
+                let entry = entry?;
+                let source_path = entry.path();
+                
+                if source_path.is_file() {
+                    let filename = source_path.file_name()
+                        .context("Invalid hook filename")?
+                        .to_string_lossy()
+                        .to_string();
+                    
+                    let dest_path = hooks_dest.join(&filename);
+                    
+                    std::fs::copy(&source_path, &dest_path)
+                        .with_context(|| format!("Failed to copy hook {:?} to {:?}", source_path, dest_path))?;
+
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(metadata) = std::fs::metadata(&dest_path) {
+                            let mut perms = metadata.permissions();
+                            perms.set_mode(0o755);
+                            let _ = std::fs::set_permissions(&dest_path, perms);
+                        }
+                    }
+
+                    debug!(
+                        target: "lmforge_overlay",
+                        hook_type = hook_type,
+                        hook_name = %filename,
+                        "installed hook script"
+                    );
+                }
+            }
+        }
+
+        for custom_hook in &self.custom_hooks {
+            if custom_hook.exists() {
+                let filename = custom_hook.file_name()
+                    .context("Invalid custom hook filename")?
+                    .to_string_lossy()
+                    .to_string();
+                
+                let hooks_dest = config_dir.join("hooks");
+                std::fs::create_dir_all(&hooks_dest)?;
+                
+                let dest_path = hooks_dest.join(&filename);
+                
+                std::fs::copy(custom_hook, &dest_path)
+                    .with_context(|| format!("Failed to copy custom hook {:?} to {:?}", custom_hook, dest_path))?;
+
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = std::fs::metadata(&dest_path) {
+                        let mut perms = metadata.permissions();
+                        perms.set_mode(0o755);
+                        let _ = std::fs::set_permissions(&dest_path, perms);
+                    }
+                }
+
+                debug!(
+                    target: "lmforge_overlay",
+                    hook_name = %filename,
+                    "installed custom hook"
+                );
+            }
+        }
+
+        info!(target: "lmforge_overlay", "hooks synchronized");
+
+        Ok(())
+    }
+
+    fn sync_customizations(&self, ctx: &BuildContext, config_dir: &Path) -> Result<()> {
+        let auto_config = config_dir.join("auto");
+        std::fs::create_dir_all(&auto_config)?;
+
+        let auto_config_content = format!(
+            r#"#!/bin/sh
+set -e
+
+echo ">>> [lmforge] Applying V1 customizations <<<"
+
+LB_ARCHITECTURE="{arch}"
+LB_DISTRIBUTION="{suite}"
+LB_ARCHIVE_AREAS="{components}"
+LB_PARENT_ARCHIVE_AREAS="{components}"
+
+LB_BOOTLOADER="grub-efi"
+LB_CHROOT_FILESYSTEM="squashfs"
+LB_BINARY_FILESYSTEM="fat32"
+
+LB_APPLICATION_TITLE="Lingmo Linux"
+LB_ISO_NAME="lingmo-linux-live"
+LB_ISO_VOLUME="Lingmo Linux Live {version}"
+
+echo ">>> [lmforge] Configuration loaded for {suite} ({arch}) <<<"
+"#,
+            arch = ctx.arch(),
+            suite = ctx.suite(),
+            components = ctx.config.platform.components.join(" "),
+            version = env!("CARGO_PKG_VERSION")
+        );
+
+        let config_file = auto_config.join("config");
+        std::fs::write(&config_file, auto_config_content)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(&config_file) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o755);
+                let _ = std::fs::set_permissions(&config_file, perms);
+            }
+        }
+
+        debug!(target: "lmforge_overlay", file = ?config_file, "generated live-build auto configuration");
+
+        info!(target: "lmforge_overlay", "customizations applied");
+
         Ok(())
     }
 
     pub fn load_package_list(&self) -> Result<Vec<String>> {
         let pkg_file = match &self.workspace {
-            Some(ws) => ws.overlay.join("packages.list"),
-            None => {
-                let rootfs = self.rootfs_path.as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("No workspace or rootfs path available"))?;
-                rootfs.join("..").join("overlay").join("packages.list")
-            }
+            Some(ws) => ws.overlay.join("package-lists").join("lingmo-packages.list.chroot"),
+            None => return Ok(Vec::new()),
         };
         
         if !pkg_file.exists() {
@@ -277,7 +437,7 @@ BUG_REPORT_URL="https://bugs.lingmo.org"
         debug!(
             target: "lmforge_overlay",
             count = packages.len(),
-            "loaded custom package list"
+            "loaded package list from overlay"
         );
 
         Ok(packages)
@@ -305,45 +465,7 @@ BUG_REPORT_URL="https://bugs.lingmo.org"
                     target: "lmforge_overlay",
                     source = ?src_path,
                     dest = ?dst_path,
-                    "copied file"
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    fn merge_directory(&self, source: &Path, target: &Path) -> Result<()> {
-        for entry in std::fs::read_dir(source)? {
-            let entry = entry?;
-            let src_path = entry.path();
-            let rel_path = src_path.strip_prefix(source)?;
-            let dst_path = target.join(rel_path);
-
-            if src_path.is_dir() {
-                std::fs::create_dir_all(&dst_path)?;
-                self.merge_directory(&src_path, &dst_path)?;
-            } else if src_path.is_file() {
-                if let Some(parent) = dst_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-
-                if dst_path.exists() {
-                    warn!(
-                        target: "lmforge_overlay",
-                        file = ?dst_path,
-                        "overwriting existing file with branding version"
-                    );
-                }
-
-                std::fs::copy(&src_path, &dst_path)
-                    .with_context(|| format!("Failed to merge {:?} into {:?}", src_path, dst_path))?;
-                
-                debug!(
-                    target: "lmforge_overlay",
-                    source = ?src_path,
-                    dest = ?dst_path,
-                    "merged file"
+                    "copied file during overlay sync"
                 );
             }
         }

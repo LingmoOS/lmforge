@@ -4,9 +4,14 @@ use std::process::Stdio;
 use std::time::Instant;
 use anyhow::{Result, bail};
 use tokio::process::Command;
-use tracing::error;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tracing::{info, warn, error};
 
 use crate::telemetry::runtime::RuntimeLogger;
+use crate::runtime::log_stream::{
+    StreamDispatcher,
+    ProcessOutput as LogProcessOutput,
+};
 
 #[derive(Debug, Clone)]
 pub struct ProcessConfig {
@@ -17,6 +22,7 @@ pub struct ProcessConfig {
     pub timeout: Option<std::time::Duration>,
     pub capture_output: bool,
     pub build_id: Option<String>,
+    pub stage_name: Option<String>,
 }
 
 impl Default for ProcessConfig {
@@ -29,6 +35,7 @@ impl Default for ProcessConfig {
             timeout: None,
             capture_output: true,
             build_id: None,
+            stage_name: None,
         }
     }
 }
@@ -72,6 +79,16 @@ impl ProcessConfig {
         self.build_id = Some(id.into());
         self
     }
+
+    pub fn with_streaming(mut self) -> Self {
+        self.capture_output = false;
+        self
+    }
+
+    pub fn with_stage_name(mut self, name: impl Into<String>) -> Self {
+        self.stage_name = Some(name.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -81,7 +98,7 @@ pub struct ProcessOutput {
     pub stderr: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ExitStatus {
     Success,
     Failure(i32),
@@ -178,6 +195,172 @@ impl Executor {
                 })
             }
         }
+    }
+
+    pub async fn execute_streaming(
+        config: &ProcessConfig,
+        dispatcher: &mut StreamDispatcher,
+    ) -> Result<LogProcessOutput> {
+        let mut log_output = LogProcessOutput::new(
+            config.command.clone(),
+            config.args.clone()
+        );
+
+        let stage_name = config.stage_name.as_deref().unwrap_or("process");
+        dispatcher.update_status_with_command("starting...", &config.command);
+
+        info!(
+            target: "lmforge_process",
+            command = %config.command,
+            args = ?config.args,
+            stage = %stage_name,
+            "starting streaming process execution"
+        );
+
+        let start_time = std::time::Instant::now();
+
+        let mut cmd_builder = Command::new(&config.command);
+        cmd_builder
+            .args(&config.args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        if let Some(ref dir) = config.working_dir {
+            cmd_builder.current_dir(dir);
+        }
+
+        for (key, value) in &config.env {
+            cmd_builder.env(key, value);
+        }
+
+        let mut child = match cmd_builder.spawn() {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                warn!(
+                    target: "lmforge_process",
+                    command = %config.command,
+                    error = %e,
+                    "command not found"
+                );
+                log_output.complete(None, false);
+                return Ok(log_output);
+            }
+            Err(e) => {
+                bail!("Failed to spawn '{}': {}", config.command, e);
+            }
+        };
+
+        dispatcher.update_status("running...");
+
+        let stdout = child.stdout.take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout"))?;
+        
+        let stderr = child.stderr.take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to capture stderr"))?;
+
+        let mut stdout_reader = BufReader::new(stdout).lines();
+        let mut stderr_reader = BufReader::new(stderr).lines();
+
+        let mut dispatcher_stdout = dispatcher.clone();
+        let mut dispatcher_stderr = dispatcher.clone();
+
+        let stdout_handle = tokio::spawn(async move {
+            let mut stdout_buffer = String::new();
+            
+            while let Ok(Some(line)) = stdout_reader.next_line().await {
+                stdout_buffer.push_str(&line);
+                stdout_buffer.push('\n');
+                
+                dispatcher_stdout.dispatch_stdout(&format!("{}\n", line));
+            }
+
+            stdout_buffer
+        });
+
+        let stderr_handle = tokio::spawn(async move {
+            let mut stderr_buffer = String::new();
+            
+            while let Ok(Some(line)) = stderr_reader.next_line().await {
+                stderr_buffer.push_str(&line);
+                stderr_buffer.push('\n');
+                
+                dispatcher_stderr.dispatch_stderr(&format!("{}\n", line));
+            }
+
+            stderr_buffer
+        });
+
+        let execution_result = match config.timeout {
+            Some(timeout) => {
+                tokio::time::timeout(timeout, child.wait()).await
+            }
+            None => Ok(child.wait().await),
+        };
+
+        let (stdout_result, stderr_result) = tokio::try_join!(stdout_handle, stderr_handle)?;
+
+        let stdout_data = stdout_result;
+        let stderr_data = stderr_result;
+
+        log_output.stdout = stdout_data;
+        log_output.stderr = stderr_data;
+
+        match execution_result {
+            Ok(Ok(status)) => {
+                let exit_code = status.code();
+                log_output.complete(exit_code, false);
+
+                if exit_code == Some(0) {
+                    dispatcher.update_status("completed successfully");
+                    info!(
+                        target: "lmforge_process",
+                        command = %config.command,
+                        exit_code = ?exit_code,
+                        duration_secs = start_time.elapsed().as_secs(),
+                        "process completed successfully"
+                    );
+                } else {
+                    dispatcher.update_status(&format!("failed with exit code {:?}", exit_code));
+                    error!(
+                        target: "lmforge_process",
+                        command = %config.command,
+                        exit_code = ?exit_code,
+                        duration_secs = start_time.elapsed().as_secs(),
+                        "process failed"
+                    );
+                }
+            }
+            Ok(Err(e)) => {
+                log_output.complete(None, false);
+                dispatcher.update_status(&format!("error: {}", e));
+                error!(
+                    target: "lmforge_process",
+                    command = %config.command,
+                    error = %e,
+                    "error waiting for process"
+                );
+                return Err(anyhow::anyhow!("Failed to wait for '{}': {}", config.command, e));
+            }
+            Err(_) => {
+                log_output.complete(None, true);
+                dispatcher.update_status("TIMED OUT");
+                
+                error!(
+                    target: "lmforge_process",
+                    command = %config.command,
+                    timeout_secs = config.timeout.map(|t| t.as_secs()),
+                    "process timed out"
+                );
+
+                let _ = child.kill().await;
+            }
+        }
+
+        dispatcher.finish(&log_output)?;
+
+        Ok(log_output)
     }
 
     pub async fn execute_success(config: &ProcessConfig) -> Result<String> {

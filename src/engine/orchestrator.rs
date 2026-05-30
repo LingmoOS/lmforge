@@ -1,4 +1,5 @@
 use std::time::Instant;
+use std::sync::Arc;
 use anyhow::{Result, Context};
 use tracing::{info, debug, warn, error};
 
@@ -21,6 +22,10 @@ use crate::infra::{
     ArtifactManager,
     CleanupRecovery,
 };
+use crate::runtime::{
+    MountManager,
+    BuildInterruptionGuard,
+};
 use crate::telemetry::build_id::BuildId as BuildIdStruct;
 use crate::telemetry::runtime::RuntimeLogger;
 
@@ -36,6 +41,7 @@ pub struct BuildOrchestrator {
     clean: bool,
     dry_run: bool,
     build_id: BuildIdStruct,
+    log_level: crate::runtime::log_stream::LogLevel,
 }
 
 impl BuildOrchestrator {
@@ -47,7 +53,13 @@ impl BuildOrchestrator {
             clean: false,
             dry_run: false,
             build_id: BuildIdStruct::new(),
+            log_level: crate::runtime::log_stream::LogLevel::default(),
         }
+    }
+
+    pub fn with_log_level(mut self, level: crate::runtime::log_stream::LogLevel) -> Self {
+        self.log_level = level;
+        self
     }
 
     pub fn with_target(mut self, target: &str) -> Self {
@@ -102,13 +114,24 @@ impl BuildOrchestrator {
         let workspace_layout = workspace_manager.initialize()
             .context("Failed to initialize workspace")?;
 
-        let cleanup_recovery = CleanupRecovery::new(workspace_manager);
+        let mount_manager = Arc::new(MountManager::new(&self.build_id.id));
+        
+        let cleanup_recovery = CleanupRecovery::new(workspace_manager)
+            .with_mount_manager(mount_manager.clone());
+            
+        let mut interruption_guard = BuildInterruptionGuard::new(&self.build_id.id)
+            .with_mount_manager(mount_manager.clone())
+            .with_cleanup_recovery(cleanup_recovery.clone_without_workspace());
+            
+        interruption_guard.initialize()
+            .context("Failed to initialize build interruption guard")?;
+            
         cleanup_recovery.initialize()
             .context("Failed to initialize cleanup and recovery system")?;
 
         let cleanup_with_ws = cleanup_recovery.with_workspace(workspace_layout.clone());
 
-        let result = self.execute_build(&config, &workspace_layout, &cleanup_with_ws);
+        let result = self.execute_build(&config, &workspace_layout, &cleanup_with_ws, &mount_manager);
 
         match &result {
             Ok(_) => {
@@ -177,14 +200,16 @@ impl BuildOrchestrator {
         config: &BuildConfig,
         workspace_layout: &WorkspaceLayout,
         cleanup: &CleanupRecovery,
+        mount_manager: &Arc<MountManager>,
     ) -> Result<()> {
         let logger = RuntimeLogger::new(&self.build_id.id);
         
         logger.log_workspace_create(&config.workspace_dir);
         
-        let mut ctx = BuildContext::new(config.clone())?;
+        let mut ctx = BuildContext::new(config.clone(), self.log_level.clone())?;
         
         ctx.workspace_layout = Some(workspace_layout.clone());
+        ctx.mount_manager = Some(mount_manager.clone());
         
         ctx.set_current_stage("initialization");
 
@@ -201,7 +226,9 @@ impl BuildOrchestrator {
         platform.validate_environment()?;
 
         let image_engine = LiveBuildEngine::new()
-            .with_workspace(workspace_layout.clone());
+            .with_workspace(workspace_layout.clone())
+            .with_mount_manager(mount_manager.clone())
+            .with_log_level(self.log_level.clone());
 
         let artifact_manager = ArtifactManager::new(workspace_layout, &self.build_id.id);
 
@@ -243,6 +270,15 @@ impl BuildOrchestrator {
 
         image_engine.cleanup(&mut ctx)?;
 
+        if let Err(e) = cleanup.verify_no_mounts_remaining() {
+            error!(
+                target: "lmforge_orchestration",
+                error = %e,
+                "WARNING: mounts remaining after build!"
+            );
+            mount_manager.force_cleanup_all()?;
+        }
+        
         cleanup.cleanup_temp_files()
             .context("Failed to cleanup temporary files")?;
 
@@ -506,19 +542,20 @@ impl Stage for BootstrapStage {
         vec!["workspace"]
     }
 
-    fn run(&self, ctx: &mut BuildContext) -> Result<()> {
-        use crate::platform::debian::DebianPlatform;
-
+    fn run(&self, _ctx: &mut BuildContext) -> Result<()> {
         let logger = RuntimeLogger::new(&self.build_id.id);
         logger.log_stage_start("bootstrap");
 
         let start_time = Instant::now();
 
-        let platform = DebianPlatform::new(ctx.suite())
-            .with_components(ctx.config.platform.components.clone());
+        info!(
+            target: "lmforge_bootstrap",
+            platform = %self.platform_name,
+            "[BOOTSTRAP]: delegated to live-build (lb config handles debootstrap)"
+        );
 
-        platform.bootstrap(ctx)?;
-
+        debug!(target: "lmforge_bootstrap", "V1 Architecture: Bootstrap is integrated into live-build lb config phase");
+        
         let duration = start_time.elapsed();
         logger.log_stage_complete("bootstrap", duration);
 
@@ -536,7 +573,7 @@ impl Stage for PackagesStage {
     }
 
     fn description(&self) -> &str {
-        "Configure and install packages into rootfs"
+        "Configure and install packages into rootfs (delegated to live-build)"
     }
 
     fn dependencies(&self) -> Vec<&str> {
@@ -549,24 +586,13 @@ impl Stage for PackagesStage {
 
         let start_time = Instant::now();
 
-        let rootfs_path = match &ctx.workspace_layout {
-            Some(layout) => layout.rootfs.clone(),
-            None => ctx.workspace.rootfs.clone()
-        };
+        info!(
+            target: "lmforge_packages",
+            "[PACKAGES ]: delegated to live-build (lb build handles package installation)"
+        );
 
-        let overlay_manager = OverlayManager::new_for_rootfs(&rootfs_path);
-        let packages = overlay_manager.load_package_list()?;
+        debug!(target: "lmforge_packages", rootfs = ?ctx.workspace.rootfs, "V1 Architecture: Package installation is integrated into live-build lb build phase");
         
-        if !packages.is_empty() {
-            stage_info!("packages",
-                package_count = packages.len(),
-                packages = ?packages,
-                "custom packages configured"
-            );
-        } else {
-            debug!(target: "lmforge_packages", "no custom package list found, using defaults from live-build");
-        }
-
         let duration = start_time.elapsed();
         logger.log_stage_complete("packages", duration);
 
@@ -617,8 +643,8 @@ impl Stage for OverlayStage {
                 let lb_config = layout.livebuild_config();
                 
                 if lb_config.exists() || layout.config.exists() {
-                    overlay_manager.apply_to_livebuild(&lb_config)?;
-                    info!(target: "lmforge_overlay", "overlays applied to live-build config");
+                    overlay_manager.sync_to_livebuild(&lb_config, ctx)?;
+                    info!(target: "lmforge_overlay", "overlays synchronized to live-build config");
                 }
             }
             None => {

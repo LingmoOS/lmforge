@@ -1,9 +1,8 @@
-use anyhow::{Result, bail};
-use tracing::{info, debug};
+use anyhow::{Result};
+use tracing::{info, debug, warn};
 
 use super::platform_trait::Platform;
 use crate::domain::context::BuildContext;
-use crate::runtime::{process::{Executor, ProcessConfig}, mount::Mount};
 
 pub struct DebianPlatform {
     suite: String,
@@ -30,30 +29,16 @@ impl DebianPlatform {
         self
     }
 
-    fn get_mirror_url(&self) -> &str {
-        self.mirror.as_deref().unwrap_or("http://deb.debian.org/debian")
+    pub fn get_mirror_url(&self) -> &str {
+        self.mirror.as_deref().unwrap_or("http://mirrors.tuna.tsinghua.edu.cn/debian")
     }
 
-    fn get_bootstrap_command_args(
-        &self,
-        ctx: &BuildContext,
-        variant: Option<&str>,
-    ) -> Vec<String> {
-        let mut args = vec![
-            "--arch".to_string(),
-            ctx.arch().to_string(),
-            "--variant".to_string(),
-            variant.unwrap_or("minbase").to_string(),
-            ctx.suite().to_string(),
-            ctx.workspace.rootfs.to_string_lossy().to_string(),
-            self.get_mirror_url().to_string(),
-        ];
+    pub fn get_suite(&self) -> &str {
+        &self.suite
+    }
 
-        for component in &self.components {
-            args.push(component.clone());
-        }
-
-        args
+    pub fn get_components(&self) -> &Vec<String> {
+        &self.components
     }
 }
 
@@ -62,138 +47,82 @@ impl Platform for DebianPlatform {
         "debian"
     }
 
-    fn bootstrap(&self, ctx: &mut BuildContext) -> Result<()> {
-        let rootfs_path = match &ctx.workspace_layout {
-            Some(layout) => layout.rootfs.clone(),
-            None => ctx.workspace.rootfs.clone()
-        };
-
+    fn bootstrap(&self, _ctx: &mut BuildContext) -> Result<()> {
         info!(
-            "Bootstrapping Debian {} ({}) into {:?}",
-            self.suite,
-            ctx.arch(),
-            rootfs_path
+            target: "lmforge_platform",
+            platform = %self.name(),
+            suite = %self.suite,
+            "V1 Phase: Delegating bootstrap to LiveBuildEngine"
         );
 
-        if rootfs_path.exists() && rootfs_path.read_dir()?.next().is_some() {
-            debug!("Rootfs already bootstrapped, skipping");
-            return Ok(());
-        }
+        info!(
+            target: "lmforge_platform",
+            note = "live-build internally handles debootstrap/mmdebstrap",
+            "No direct bootstrap execution in V1 architecture"
+        );
 
-        std::fs::create_dir_all(&rootfs_path)?;
+        debug!(
+            target: "lmforge_platform",
+            mirror = %self.get_mirror_url(),
+            components = ?self.components,
+            "Platform configuration prepared for live-build"
+        );
 
-        let args = vec![
-            "--arch".to_string(),
-            ctx.arch().to_string(),
-            "--variant".to_string(),
-            "minbase".to_string(),
-            ctx.suite().to_string(),
-            rootfs_path.to_string_lossy().to_string(),
-            self.get_mirror_url().to_string(),
-        ];
-
-        let output = {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async {
-                Executor::execute(
-                    &ProcessConfig::new(self.bootstrap_command())
-                        .args(args)
-                ).await
-            })?
-        };
-
-        match output.status {
-            crate::runtime::process::ExitStatus::Success => {
-                info!("Debootstrap completed successfully");
-                
-                let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(async {
-                    Mount::mount_all_for_chroot(&rootfs_path).await
-                })?;
-                
-                Ok(())
-            }
-            _ => {
-                bail!(
-                    "Debootstrap failed:\nstdout: {}\nstderr: {}",
-                    output.stdout,
-                    output.stderr
-                );
-            }
-        }
+        Ok(())
     }
 
-    fn install_packages(&self, ctx: &mut BuildContext, packages: &[&str]) -> Result<()> {
-        let rootfs_path = match &ctx.workspace_layout {
-            Some(layout) => layout.rootfs.clone(),
-            None => ctx.workspace.rootfs.clone()
-        };
+    fn install_packages(&self, _ctx: &mut BuildContext, packages: &[&str]) -> Result<()> {
+        info!(
+            target: "lmforge_platform",
+            platform = %self.name(),
+            packages = ?packages,
+            "V1 Phase: Package installation delegated to live-build package-lists"
+        );
 
-        info!("Installing packages: {:?}", packages);
+        info!(
+            target: "lmforge_platform",
+            note = "packages will be installed via live-build hooks or chroot_local-packages",
+            "Use OverlayManager to configure package-lists/"
+        );
 
-        let mut args = vec![
-            "apt-get".to_string(),
-            "install".to_string(),
-            "-y".to_string(),
-            "--no-install-recommends".to_string(),
-        ];
+        debug!(
+            target: "lmforge_platform",
+            package_count = packages.len(),
+            "Package list recorded for overlay synchronization"
+        );
 
-        for pkg in packages {
-            args.push(pkg.to_string());
-        }
-
-        let output = {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async {
-                Executor::execute(
-                    &ProcessConfig::new("chroot")
-                        .arg(&rootfs_path)
-                        .args(args)
-                        .env("DEBIAN_FRONTEND", "noninteractive")
-                ).await
-            })?
-        };
-
-        match output.status {
-            crate::runtime::process::ExitStatus::Success => {
-                debug!("Packages installed successfully");
-                Ok(())
-            }
-            _ => {
-                bail!(
-                    "Package installation failed:\nstderr: {}",
-                    output.stderr
-                );
-            }
-        }
+        Ok(())
     }
 
-    fn generate_repo_metadata(&self, ctx: &mut BuildContext) -> Result<()> {
-        let rootfs_path = match &ctx.workspace_layout {
-            Some(layout) => layout.rootfs.clone(),
-            None => ctx.workspace.rootfs.clone()
-        };
+    fn generate_repo_metadata(&self, _ctx: &mut BuildContext) -> Result<()> {
+        info!(
+            target: "lmforge_platform",
+            platform = %self.name(),
+            "V1 Phase: Repository metadata generation delegated to live-build"
+        );
 
-        info!("Generating repository metadata");
-
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(async {
-            Executor::execute_success(
-                &ProcessConfig::new("chroot")
-                    .arg(&rootfs_path)
-                    .args(["apt-get", "update"])
-            ).await
-        })?;
+        info!(
+            target: "lmforge_platform",
+            note = "apt sources and repository configuration handled by lb config",
+            "Repository metadata will be generated during live-build process"
+        );
 
         Ok(())
     }
 
     fn supported_architectures(&self) -> Vec<&str> {
-        vec!["amd64", "arm64", "i386"]
+        vec!["amd64", "i386", "arm64", "armhf"]
     }
 
     fn supported_suites(&self) -> Vec<&str> {
-        vec!["bookworm", "bullseye", "sid", "trixie"]
+        vec![
+            "stable",
+            "testing",
+            "unstable",
+            "bookworm",
+            "trixie",
+            "sid",
+        ]
     }
 
     fn package_manager_command(&self) -> &str {
@@ -201,38 +130,56 @@ impl Platform for DebianPlatform {
     }
 
     fn validate_environment(&self) -> Result<()> {
-        info!("Validating Debian platform environment");
+        info!(
+            target: "lmforge_platform",
+            platform = %self.name(),
+            "Validating Debian platform environment for V1 (live-build mode)"
+        );
 
-        let bootstrap_exists = {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async {
-                Executor::exists(self.bootstrap_command()).await
-            })
-        };
+        let rt = tokio::runtime::Runtime::new()?;
 
-        if !bootstrap_exists {
-            bail!(
-                "{} is not installed. Please install it first.",
-                self.bootstrap_command()
-            );
+        let lb_exists = rt.block_on(async {
+            crate::runtime::process::Executor::exists("lb").await
+        });
+
+        if !lb_exists {
+            let lb_build_exists = rt.block_on(async {
+                crate::runtime::process::Executor::exists("lb_build").await
+            });
+
+            if !lb_build_exists {
+                warn!(
+                    target: "lmforge_platform",
+                    "live-build not found. Install with: sudo apt-get install live-build"
+                );
+                
+                return Err(anyhow::anyhow!(
+                    "live-build is required but not installed.\n\
+                     \n\
+                     Installation:\n\
+                     sudo apt-get update\n\
+                     sudo apt-get install live-build\n\
+                     \n\
+                     V1 Architecture requires live-build for ISO generation."
+                ));
+            }
         }
 
-        let dpkg_exists = {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async {
-                Executor::exists("dpkg").await
-            })
-        };
+        info!(
+            target: "lmforge_platform",
+            "Debian platform environment validated successfully"
+        );
 
-        if !dpkg_exists {
-            bail!("dpkg is not installed");
-        }
-
-        debug!("Environment validation passed");
         Ok(())
     }
 
     fn bootstrap_command(&self) -> &str {
-        "debootstrap"
+        info!(
+            target: "lmforge_platform",
+            note = "deprecated in V1 - live-build handles bootstrapping internally",
+            "Returning placeholder for API compatibility"
+        );
+        
+        "lb"
     }
 }
