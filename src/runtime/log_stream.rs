@@ -615,12 +615,42 @@ impl StreamDispatcher {
 
         self.stage_status.increment_line();
 
+        self.record_to_log_file_stdout(data);
+
+        self.filter_to_console_stdout(data);
+
+        self.update_periodic_status();
+    }
+
+    pub fn dispatch_stderr(&mut self, data: &str) {
+        if data.is_empty() {
+            return;
+        }
+
+        self.record_to_log_file_stderr(data);
+
+        self.filter_to_console_stderr(data);
+
+        warn!(target: "lmforge_process", data = %data, "process stderr");
+    }
+
+    fn record_to_log_file_stdout(&self, data: &str) {
         if let Some(ref writer) = self.log_writer {
             if let Ok(mut w) = writer.lock() {
                 let _ = w.write_stdout(data);
             }
         }
+    }
 
+    fn record_to_log_file_stderr(&self, data: &str) {
+        if let Some(ref writer) = self.log_writer {
+            if let Ok(mut w) = writer.lock() {
+                let _ = w.write_stderr(data);
+            }
+        }
+    }
+
+    fn filter_to_console_stdout(&mut self, data: &str) {
         if self.log_level.should_passthrough() {
             print!("{}", data);
             use std::io::Write;
@@ -633,29 +663,9 @@ impl StreamDispatcher {
                 self.dispatch_to_console(line);
             }
         }
-
-        if self.should_update_periodic_status() {
-            let lines_processed = self.stage_status.line_count;
-            self.update_status(&format!("running... ({} lines)", lines_processed));
-        } else if self.should_show_heartbeat() && !self.log_level.should_passthrough() {
-            println!("[{}]: still running ({})",
-                self.stage_status.name.to_uppercase(),
-                self.stage_status.format_elapsed()
-            );
-        }
     }
 
-    pub fn dispatch_stderr(&mut self, data: &str) {
-        if data.is_empty() {
-            return;
-        }
-
-        if let Some(ref writer) = self.log_writer {
-            if let Ok(mut w) = writer.lock() {
-                let _ = w.write_stderr(data);
-            }
-        }
-
+    fn filter_to_console_stderr(&self, data: &str) {
         if self.log_level.should_passthrough() {
             eprint!("{}", data);
             use std::io::Write;
@@ -668,8 +678,18 @@ impl StreamDispatcher {
                 eprintln!("[ERR] ... and more stderr output");
             }
         }
+    }
 
-        warn!(target: "lmforge_process", data = %data, "process stderr");
+    fn update_periodic_status(&mut self) {
+        if self.should_update_periodic_status() {
+            let lines_processed = self.stage_status.line_count;
+            self.update_status(&format!("running... ({} lines)", lines_processed));
+        } else if self.should_show_heartbeat() && !self.log_level.should_passthrough() {
+            println!("[{}]: still running ({})",
+                self.stage_status.name.to_uppercase(),
+                self.stage_status.format_elapsed()
+            );
+        }
     }
 
     pub fn finish(&mut self, output: &ProcessOutput) -> Result<()> {
