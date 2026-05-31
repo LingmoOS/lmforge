@@ -590,20 +590,28 @@ impl StreamDispatcher {
     }
 
     fn dispatch_to_console(&self, line: &str) {
-        if self.log_level.should_passthrough() {
-            print!("{}", line);
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
-            return;
-        }
-
-        if self.log_level.should_show_all_logs() {
-            if !self.log_level.is_noise_line(line) {
-                println!("  {}", line.trim_end());
+        match self.log_level {
+            LogLevel::Silent => {}
+            LogLevel::Normal => {}
+            LogLevel::Verbose => {
+                if self.log_level.is_key_log_line(line) {
+                    println!("  {}", line.trim_end());
+                }
             }
-        } else if self.log_level.should_show_key_logs() {
-            if self.log_level.is_key_log_line(line) {
-                println!("  {}", line.trim_end());
+            LogLevel::Detailed => {
+                if !self.log_level.is_noise_line(line) {
+                    println!("  {}", line.trim_end());
+                }
+            }
+            LogLevel::Trace => {
+                if !self.log_level.is_noise_line(line) {
+                    println!("  {}", line.trim_end());
+                }
+            }
+            LogLevel::Debug => {
+                print!("{}", line);
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
             }
         }
     }
@@ -651,7 +659,7 @@ impl StreamDispatcher {
     }
 
     fn filter_to_console_stdout(&mut self, data: &str) {
-        if self.log_level.should_passthrough() {
+        if *self.log_level == LogLevel::Debug {
             print!("{}", data);
             use std::io::Write;
             let _ = std::io::stdout().flush();
@@ -666,11 +674,11 @@ impl StreamDispatcher {
     }
 
     fn filter_to_console_stderr(&self, data: &str) {
-        if self.log_level.should_passthrough() {
+        if *self.log_level == LogLevel::Debug {
             eprint!("{}", data);
             use std::io::Write;
             let _ = std::io::stderr().flush();
-        } else if self.log_level.should_show_key_logs() || self.log_level.should_show_all_logs() {
+        } else if *self.log_level >= LogLevel::Verbose {
             for line in data.lines().take(10) {
                 eprintln!("[ERR] {}", line);
             }
@@ -681,10 +689,14 @@ impl StreamDispatcher {
     }
 
     fn update_periodic_status(&mut self) {
+        if *self.log_level == LogLevel::Silent {
+            return;
+        }
+
         if self.should_update_periodic_status() {
             let lines_processed = self.stage_status.line_count;
             self.update_status(&format!("running... ({} lines)", lines_processed));
-        } else if self.should_show_heartbeat() && !self.log_level.should_passthrough() {
+        } else if self.should_show_heartbeat() && *self.log_level <= LogLevel::Normal {
             println!("[{}]: still running ({})",
                 self.stage_status.name.to_uppercase(),
                 self.stage_status.format_elapsed()
@@ -693,7 +705,7 @@ impl StreamDispatcher {
     }
 
     pub fn finish(&mut self, output: &ProcessOutput) -> Result<()> {
-        if !self.log_level.should_passthrough() {
+        if *self.log_level != LogLevel::Debug {
             print_stage_complete(&self.stage_status, output.success, &self.log_level);
         }
 

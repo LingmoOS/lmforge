@@ -105,7 +105,7 @@ impl Cli {
                 _ => LogLevel::Trace,
             }
         } else {
-            LogLevel::Debug
+            LogLevel::Normal
         }
     }
 
