@@ -845,63 +845,13 @@ error: {error}
         );
 
         let lb_config_dir = layout.livebuild_config();
-        
+
         if lb_config_dir.exists() {
             info!(
                 target: "lmforge_cleanup",
                 lb_config = ?lb_config_dir,
-                "found live-build configuration directory, cleaning up"
+                "preserving live-build directory (contains ISO artifacts)"
             );
-
-            let clean_result = std::process::Command::new("lb")
-                .arg("clean")
-                .arg("--all")
-                .current_dir(&lb_config_dir)
-                .output();
-
-            match clean_result {
-                Ok(output) => {
-                    if output.status.success() {
-                        info!(
-                            target: "lmforge_cleanup",
-                            lb_config = ?lb_config_dir,
-                            "lb clean --all completed successfully"
-                        );
-                    } else {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        warn!(
-                            target: "lmforge_cleanup",
-                            lb_config = ?lb_config_dir,
-                            exit_code = output.status.code(),
-                            stderr = %stderr,
-                            "lb clean --all failed, will remove directory manually"
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        target: "lmforge_cleanup",
-                        lb_config = ?lb_config_dir,
-                        error = %e,
-                        "failed to execute lb clean, removing directory manually"
-                    );
-                }
-            }
-
-            if let Err(e) = self.remove_directory_with_retry(&lb_config_dir) {
-                warn!(
-                    target: "lmforge_cleanup",
-                    lb_config = ?lb_config_dir,
-                    error = %e,
-                    "failed to remove live-build config directory"
-                );
-            } else {
-                debug!(
-                    target: "lmforge_cleanup",
-                    lb_config = ?lb_config_dir,
-                    "live-build configuration directory removed"
-                );
-            }
         }
 
         let lb_cache_dirs = [

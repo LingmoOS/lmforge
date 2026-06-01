@@ -455,52 +455,31 @@ impl ImageEngine for LiveBuildEngine {
         let lb_config = self.get_lb_config_dir(ctx);
 
         if lb_config.exists() {
-            info!(target: "lmforge_livebuild", config_dir = ?lb_config, "running lb clean --all");
+            info!(target: "lmforge_livebuild", config_dir = ?lb_config, "skipping lb clean to preserve ISO artifacts");
 
-            let clean_result = {
-                let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(async {
-                    Executor::execute(
-                        &ProcessConfig::new("lb")
-                            .arg("clean")
-                            .arg("--all")
-                            .working_dir(&lb_config)
-                    ).await
-                })
+            let rootfs_path = match &ctx.workspace_layout {
+                Some(layout) => layout.rootfs.clone(),
+                None => ctx.workspace.rootfs.clone()
             };
 
-            if let Err(e) = clean_result {
-                warn!(target: "lmforge_livebuild", error = %e, "lb clean failed, will remove directory manually");
+            if rootfs_path.exists() {
+                info!(target: "lmforge_livebuild", rootfs = ?rootfs_path, "unmounting rootfs mounts");
+
+                let unmount_result = {
+                    let rt = tokio::runtime::Runtime::new()?;
+                    rt.block_on(async {
+                        Mount::unmount_all_from_chroot(&rootfs_path).await
+                    })
+                };
+
+                if let Err(e) = unmount_result {
+                    warn!(target: "lmforge_livebuild", error = %e, "failed to unmount rootfs mounts");
+                }
             }
 
-            if let Err(e) = std::fs::remove_dir_all(&lb_config) {
-                warn!(target: "lmforge_livebuild", error = %e, "failed to remove live-build config directory");
-            } else {
-                debug!(target: "lmforge_livebuild", config_dir = ?lb_config, "removed live-build config directory");
-            }
+            info!(target: "lmforge_livebuild", config_dir = ?lb_config, "preserving live-build directory for inspection");
         }
 
-        let rootfs_path = match &ctx.workspace_layout {
-            Some(layout) => layout.rootfs.clone(),
-            None => ctx.workspace.rootfs.clone()
-        };
-
-        if rootfs_path.exists() {
-            info!(target: "lmforge_livebuild", rootfs = ?rootfs_path, "unmounting rootfs mounts");
-
-            let unmount_result = {
-                let rt = tokio::runtime::Runtime::new()?;
-                rt.block_on(async {
-                    Mount::unmount_all_from_chroot(&rootfs_path).await
-                })
-            };
-
-            if let Err(e) = unmount_result {
-                warn!(target: "lmforge_livebuild", error = %e, "failed to unmount all from chroot");
-            }
-        }
-
-        info!(target: "lmforge_livebuild", stage = "cleanup", "cleanup completed");
         Ok(())
     }
 

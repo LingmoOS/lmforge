@@ -104,7 +104,6 @@ exfat-fuse
 
 # System utilities
 sudo
-usersetup
 locales
 keyboard-configuration
 console-setup

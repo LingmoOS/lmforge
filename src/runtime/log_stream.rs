@@ -659,7 +659,7 @@ impl StreamDispatcher {
     }
 
     fn filter_to_console_stdout(&mut self, data: &str) {
-        if *self.log_level == LogLevel::Debug {
+        if self.log_level == LogLevel::Debug {
             print!("{}", data);
             use std::io::Write;
             let _ = std::io::stdout().flush();
@@ -674,11 +674,11 @@ impl StreamDispatcher {
     }
 
     fn filter_to_console_stderr(&self, data: &str) {
-        if *self.log_level == LogLevel::Debug {
+        if self.log_level == LogLevel::Debug {
             eprint!("{}", data);
             use std::io::Write;
             let _ = std::io::stderr().flush();
-        } else if *self.log_level >= LogLevel::Verbose {
+        } else if self.log_level >= LogLevel::Verbose {
             for line in data.lines().take(10) {
                 eprintln!("[ERR] {}", line);
             }
@@ -689,14 +689,14 @@ impl StreamDispatcher {
     }
 
     fn update_periodic_status(&mut self) {
-        if *self.log_level == LogLevel::Silent {
+        if self.log_level == LogLevel::Silent {
             return;
         }
 
         if self.should_update_periodic_status() {
             let lines_processed = self.stage_status.line_count;
             self.update_status(&format!("running... ({} lines)", lines_processed));
-        } else if self.should_show_heartbeat() && *self.log_level <= LogLevel::Normal {
+        } else if self.should_show_heartbeat() && self.log_level <= LogLevel::Normal {
             println!("[{}]: still running ({})",
                 self.stage_status.name.to_uppercase(),
                 self.stage_status.format_elapsed()
@@ -705,7 +705,7 @@ impl StreamDispatcher {
     }
 
     pub fn finish(&mut self, output: &ProcessOutput) -> Result<()> {
-        if *self.log_level != LogLevel::Debug {
+        if self.log_level != LogLevel::Debug {
             print_stage_complete(&self.stage_status, output.success, &self.log_level);
         }
 
