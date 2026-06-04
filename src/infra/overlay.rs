@@ -89,8 +89,8 @@ live-config-systemd
 syslinux-common
 pxelinux
 
-# Desktop environment (optional)
-# task-xfce-desktop
+# Desktop environment: Velora
+velora-desktop-environment-core
 
 # Network tools
 network-manager
@@ -169,6 +169,7 @@ BUG_REPORT_URL="https://bugs.lingmo.org"
         std::fs::create_dir_all(&config_dir)?;
 
         self.sync_package_lists(&config_dir)?;
+        self.sync_repositories(&config_dir, ctx)?;
         self.sync_includes_chroot(&config_dir)?;
         self.sync_hooks(&config_dir)?;
         self.sync_customizations(ctx, &config_dir)?;
@@ -220,6 +221,94 @@ BUG_REPORT_URL="https://bugs.lingmo.org"
         }
 
         info!(target: "lmforge_overlay", "package lists synchronized");
+
+        Ok(())
+    }
+
+    fn sync_repositories(&self, config_dir: &Path, ctx: &BuildContext) -> Result<()> {
+        let repos = &ctx.config.repositories;
+        if repos.is_empty() {
+            return Ok(());
+        }
+
+        let includes_chroot = config_dir.join("includes.chroot");
+        let apt_sources_dir = includes_chroot.join("etc/apt/sources.list.d");
+        let keyrings_dir = includes_chroot.join("etc/apt/keyrings");
+
+        std::fs::create_dir_all(&apt_sources_dir)?;
+        std::fs::create_dir_all(&keyrings_dir)?;
+
+        for repo in repos {
+            if repo.enabled == Some(false) {
+                continue;
+            }
+
+            // Write .sources file (DEB822 format)
+            let sources_file = apt_sources_dir.join(format!("{}.sources", repo.name));
+            std::fs::write(&sources_file, repo.to_sources_content())?;
+            debug!(
+                target: "lmforge_overlay",
+                file = ?sources_file,
+                repo = %repo.name,
+                "wrote repository sources file"
+            );
+
+            // Write GPG key if signed_by is a relative path (keyring file)
+            if let Some(ref signed_by) = repo.signed_by {
+                if signed_by.starts_with("/etc/apt/keyrings/") {
+                    let key_filename = signed_by.trim_start_matches("/etc/apt/keyrings/");
+                    let key_file = keyrings_dir.join(key_filename);
+
+                    if !key_file.exists() {
+                        // Download key from OBS Release.key URL
+                        let key_url = format!("{}/Release.key", repo.uri.trim_end_matches('/'));
+                        info!(
+                            target: "lmforge_overlay",
+                            url = %key_url,
+                            dest = ?key_file,
+                            "downloading repository signing key"
+                        );
+
+                        match self.download_key(&key_url, &key_file) {
+                            Ok(_) => {
+                                debug!(target: "lmforge_overlay", file = ?key_file, "GPG key downloaded");
+                            }
+                            Err(e) => {
+                                warn!(
+                                    target: "lmforge_overlay",
+                                    error = %e,
+                                    url = %key_url,
+                                    "failed to download GPG key, repository may not work"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        info!(
+            target: "lmforge_overlay",
+            count = repos.len(),
+            "repositories synchronized"
+        );
+
+        Ok(())
+    }
+
+    fn download_key(&self, url: &str, dest: &Path) -> Result<()> {
+        let output = std::process::Command::new("curl")
+            .args(["-fsSL", "-o", &dest.to_string_lossy(), url])
+            .output()
+            .with_context(|| format!("Failed to run curl for {}", url))?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "curl failed (exit {:?}): {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
 
         Ok(())
     }

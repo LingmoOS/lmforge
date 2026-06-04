@@ -6,12 +6,12 @@ use super::context::BuildConfig;
 
 const BUILTIN_CONFIG: &str = r#"
 arch = "amd64"
-suite = "bookworm"
+suite = "trixie"
 version = "1.0.0"
 
 [platform]
 name = "debian"
-components = ["main", "contrib", "non-free"]
+components = ["main", "contrib", "non-free", "non-free-firmware"]
 
 [image]
 engine = "livebuild"
@@ -19,7 +19,7 @@ iso_name = "lingmo-live.iso"
 volume_id = "Lingmo Live"
 
 [logging]
-level = 5
+level = 1
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,7 +70,51 @@ pub struct PartialImageConfig {
     pub volume_id: Option<String>,
 }
 
-pub struct ConfigLoader {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepositoryDefinition {
+    pub name: String,
+    pub uri: String,
+    pub suite: String,
+    pub signed_by: Option<String>,
+    pub architectures: Option<Vec<String>>,
+    pub enabled: Option<bool>,
+}
+
+impl RepositoryDefinition {
+    pub fn to_sources_content(&self) -> String {
+        let arches = self.architectures.as_ref()
+            .map(|a| a.join(" "))
+            .unwrap_or_else(|| "amd64".to_string());
+        let signed = self.signed_by.as_deref()
+            .unwrap_or("");
+
+        format!(
+            "Types: deb\nArchitectures: {arches}\nURIs: {}\nSuites: {}\nSigned-By: {signed}\n",
+            self.uri, self.suite
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PartialConfig {
+    pub arch: Option<String>,
+    pub suite: Option<String>,
+    pub version: Option<String>,
+    pub output_dir: Option<PathBuf>,
+    pub workspace_dir: Option<PathBuf>,
+    pub features: Option<Vec<String>>,
+    pub platform: Option<PartialPlatformConfig>,
+    pub image: Option<PartialImageConfig>,
+    pub logging: Option<PartialLoggingConfig>,
+    pub repositories: Option<Vec<RepositoryDefinition>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PartialLoggingConfig {
+    pub level: Option<u8>,
+}
+
+struct ConfigLoader {
     layers: Vec<ConfigLayer>,
 }
 
@@ -201,6 +245,10 @@ impl ConfigLoader {
             if let Some(ref volume_id) = image.volume_id {
                 base.image.volume_id = volume_id.clone();
             }
+        }
+
+        if let Some(ref repos) = partial.repositories {
+            base.repositories = repos.clone();
         }
     }
 }

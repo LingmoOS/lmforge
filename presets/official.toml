@@ -2,13 +2,20 @@
 # 官方预设 - 用于标准 ISO 构建
 
 arch = "amd64"
-suite = "bookworm"
+suite = "trixie"
 
 [platform]
 name = "debian"
-components = ["main", "contrib", "non-free"]
+components = ["main", "contrib", "non-free", "non-free-firmware"]
 
 [image]
 engine = "livebuild"
 iso_name = "lingmo-live-amd64.iso"
 volume_id = "Lingmo Live AMD64"
+
+[[repositories]]
+name = "lingmoos-obs"
+uri = "https://download.opensuse.org/repositories/home:/LingmoOS/Debian_13/"
+suite = "./"
+signed_by = "/etc/apt/keyrings/lingmoos-obs.gpg"
+enabled = true

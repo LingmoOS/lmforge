@@ -636,10 +636,7 @@ impl StreamDispatcher {
         }
 
         self.record_to_log_file_stderr(data);
-
         self.filter_to_console_stderr(data);
-
-        warn!(target: "lmforge_process", data = %data, "process stderr");
     }
 
     fn record_to_log_file_stdout(&self, data: &str) {

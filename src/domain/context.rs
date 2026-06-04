@@ -4,6 +4,7 @@ use anyhow::Result;
 use serde::{Serialize, Deserialize};
 
 use crate::domain::artifact::Artifact;
+use crate::domain::config::RepositoryDefinition;
 use crate::infra::workspace::WorkspaceLayout;
 use crate::runtime::MountManager;
 
@@ -17,6 +18,7 @@ pub struct BuildConfig {
     pub features: Vec<String>,
     pub platform: PlatformConfig,
     pub image: ImageConfig,
+    pub repositories: Vec<RepositoryDefinition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,7 +45,7 @@ impl Default for BuildConfig {
     fn default() -> Self {
         BuildConfig {
             arch: "amd64".to_string(),
-            suite: "bookworm".to_string(),
+            suite: "trixie".to_string(),
             version: "1.0.0".to_string(),
             output_dir: PathBuf::from("./output"),
             workspace_dir: PathBuf::from("./workspace"),
@@ -51,13 +53,14 @@ impl Default for BuildConfig {
             platform: PlatformConfig {
                 name: "debian".to_string(),
                 mirror: None,
-                components: vec!["main".to_string(), "contrib".to_string(), "non-free".to_string()],
+                components: vec!["main".to_string(), "contrib".to_string(), "non-free".to_string(), "non-free-firmware".to_string()],
             },
             image: ImageConfig {
                 engine: ImageEngineType::LiveBuild,
                 iso_name: "lingmo-live.iso".to_string(),
                 volume_id: "Lingmo Live".to_string(),
             },
+            repositories: vec![],
         }
     }
 }
