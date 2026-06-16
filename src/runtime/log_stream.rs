@@ -4,7 +4,7 @@ use std::io::Write;
 use std::time::{Instant, Duration};
 use anyhow::{Result, Context};
 use chrono::Utc;
-use tracing::{info, warn};
+use tracing::info;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {

@@ -51,6 +51,7 @@ impl OverlayManager {
         let dirs = [
             ("package-lists", workspace.overlay.join("package-lists")),
             ("includes.chroot", workspace.overlay.join("includes.chroot")),
+            ("includes.binary", workspace.overlay.join("includes.binary")),
             ("hooks/chroot", workspace.overlay.join("hooks").join("chroot")),
             ("hooks/binary", workspace.overlay.join("hooks").join("binary")),
             ("filesystem", workspace.overlay.join("filesystem")),
@@ -66,6 +67,7 @@ impl OverlayManager {
 
         self.create_default_package_list()?;
         self.create_default_branding()?;
+        self.create_default_grub_theme()?;
         
         info!(target: "lmforge_overlay", "overlay directories initialized for V1 architecture");
         Ok(())
@@ -78,7 +80,7 @@ impl OverlayManager {
         let pkg_list_dir = workspace.overlay.join("package-lists");
         std::fs::create_dir_all(&pkg_list_dir)?;
 
-        let default_packages = r#"# Lingmo Linux - Default Package List
+        let default_packages = r#"# Lingmo OS - Default Package List
 # V1 Architecture: Packages installed via live-build
 
 # Live system essentials
@@ -90,7 +92,18 @@ syslinux-common
 pxelinux
 
 # Desktop environment: Velora
+velora-desktop-environment-base
 velora-desktop-environment-core
+velora-desktop-environment-extras
+ddm
+treeland
+treeland-wayland-session
+deepin-desktop-theme
+velora-gtk-theme
+deepin-wallpapers
+lingmo-desktop-base
+kwin-x11
+kwin-wayland
 
 # Network tools
 network-manager
@@ -132,18 +145,18 @@ man-db
         
         std::fs::create_dir_all(&branding_etc_dir)?;
 
-        let issue_content = r#"Lingmo Linux Live \n \l
+        let issue_content = r#"Lingmo OS Alpha \n \l
 "#;
         std::fs::write(branding_etc_dir.join("issue"), issue_content)?;
 
-        let issue_net_content = r#"Lingmo Linux Live (\n) (\l)
+        let issue_net_content = r#"Lingmo OS Alpha (\n) (\l)
 "#;
         std::fs::write(branding_etc_dir.join("issue.net"), issue_net_content)?;
 
-        let os_release_content = r#"PRETTY_NAME="Lingmo Linux"
-NAME="Lingmo Linux"
-VERSION_ID=1.0
-VERSION="1.0 (Live)"
+        let os_release_content = r#"PRETTY_NAME="Lingmo OS"
+NAME="Lingmo OS"
+VERSION_ID=5.0
+VERSION="5.0 (Alpha)"
 ID=lingmo
 ID_LIKE=debian
 HOME_URL="https://www.lingmo.org"
@@ -171,6 +184,7 @@ BUG_REPORT_URL="https://bugs.lingmo.org"
         self.sync_package_lists(&config_dir)?;
         self.sync_repositories(&config_dir, ctx)?;
         self.sync_includes_chroot(&config_dir)?;
+        self.sync_includes_binary(&config_dir)?;
         self.sync_hooks(&config_dir)?;
         self.sync_customizations(ctx, &config_dir)?;
 
@@ -231,85 +245,38 @@ BUG_REPORT_URL="https://bugs.lingmo.org"
             return Ok(());
         }
 
-        let includes_chroot = config_dir.join("includes.chroot");
-        let apt_sources_dir = includes_chroot.join("etc/apt/sources.list.d");
-        let keyrings_dir = includes_chroot.join("etc/apt/keyrings");
-
-        std::fs::create_dir_all(&apt_sources_dir)?;
-        std::fs::create_dir_all(&keyrings_dir)?;
+        let archives_dir = config_dir.join("archives");
+        std::fs::create_dir_all(&archives_dir)?;
 
         for repo in repos {
             if repo.enabled == Some(false) {
                 continue;
             }
 
-            // Write .sources file (DEB822 format)
-            let sources_file = apt_sources_dir.join(format!("{}.sources", repo.name));
-            std::fs::write(&sources_file, repo.to_sources_content())?;
-            debug!(
-                target: "lmforge_overlay",
-                file = ?sources_file,
-                repo = %repo.name,
-                "wrote repository sources file"
-            );
+            // Write archives/*.list.chroot (no signed-by: let lb auto-handle key from .key.chroot)
+            let list_content = format!("deb {} {}\n", repo.uri, repo.suite);
+            let list_file = archives_dir.join("lingmo.list.chroot");
+            std::fs::write(&list_file, list_content)?;
+            debug!(target: "lmforge_overlay", file = ?list_file, repo = %repo.name, "wrote archive list");
 
-            // Write GPG key if signed_by is a relative path (keyring file)
-            if let Some(ref signed_by) = repo.signed_by {
-                if signed_by.starts_with("/etc/apt/keyrings/") {
-                    let key_filename = signed_by.trim_start_matches("/etc/apt/keyrings/");
-                    let key_file = keyrings_dir.join(key_filename);
+            // Copy binary GPG key to config/archives/lingmo.key.chroot
+            // Per live-build manual §8.1.5: config/archives/{name}.key.{chroot,binary}
+            let key_file = archives_dir.join("lingmo.key.chroot");
+            let local_key = PathBuf::from("assets/repositories").join("lingmo.key");
 
-                    if !key_file.exists() {
-                        // Download key from OBS Release.key URL
-                        let key_url = format!("{}/Release.key", repo.uri.trim_end_matches('/'));
-                        info!(
-                            target: "lmforge_overlay",
-                            url = %key_url,
-                            dest = ?key_file,
-                            "downloading repository signing key"
-                        );
-
-                        match self.download_key(&key_url, &key_file) {
-                            Ok(_) => {
-                                debug!(target: "lmforge_overlay", file = ?key_file, "GPG key downloaded");
-                            }
-                            Err(e) => {
-                                warn!(
-                                    target: "lmforge_overlay",
-                                    error = %e,
-                                    url = %key_url,
-                                    "failed to download GPG key, repository may not work"
-                                );
-                            }
-                        }
-                    }
-                }
+            if !local_key.exists() {
+                anyhow::bail!(
+                    "GPG key file not found at {:?}. Repository '{}' requires signing key.",
+                    local_key, repo.name
+                );
             }
+
+            std::fs::copy(&local_key, &key_file)
+                .with_context(|| format!("Failed to copy GPG key {:?} -> {:?}", local_key, key_file))?;
+            info!(target: "lmforge_overlay", src = ?local_key, dst = ?key_file, "copied signing key to archives");
         }
 
-        info!(
-            target: "lmforge_overlay",
-            count = repos.len(),
-            "repositories synchronized"
-        );
-
-        Ok(())
-    }
-
-    fn download_key(&self, url: &str, dest: &Path) -> Result<()> {
-        let output = std::process::Command::new("curl")
-            .args(["-fsSL", "-o", &dest.to_string_lossy(), url])
-            .output()
-            .with_context(|| format!("Failed to run curl for {}", url))?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "curl failed (exit {:?}): {}",
-                output.status.code(),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
+        info!(target: "lmforge_overlay", count = repos.len(), "repositories synchronized");
         Ok(())
     }
 
@@ -362,6 +329,86 @@ BUG_REPORT_URL="https://bugs.lingmo.org"
         Ok(())
     }
 
+    fn sync_includes_binary(&self, config_dir: &Path) -> Result<()> {
+        let workspace = self.workspace.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available"))?;
+
+        let includes_binary = config_dir.join("includes.binary");
+        let source = workspace.overlay.join("includes.binary");
+
+        if source.exists() {
+            std::fs::create_dir_all(&includes_binary)?;
+            self.copy_recursive(source, &includes_binary)?;
+            info!(target: "lmforge_overlay", "includes.binary synchronized (GRUB theme, etc.)");
+        }
+
+        Ok(())
+    }
+
+    fn create_default_grub_theme(&self) -> Result<()> {
+        let workspace = self.workspace.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available"))?;
+
+        let theme_dir = workspace.overlay.join("includes.binary").join("boot").join("grub").join("theme");
+        std::fs::create_dir_all(&theme_dir)?;
+
+        // Lingmo OS GRUB theme
+        let theme_txt = r#"# Lingmo OS GRUB Theme
+title-text: "Lingmo OS"
+title-color: "#FFFFFF"
+title-font: "Sans Bold 24"
+desktop-image: "background.png"
+desktop-color: "#1a1a2e"
+
+terminal-left: "5%"
+terminal-top: "80%"
+terminal-width: "90%"
+terminal-height: "15%"
+terminal-border: "0"
+terminal-font: "Mono 12"
+
++ label {
+    left: 5%
+    top: 10%
+    width: 90%
+    height: 30%
+    text-align: center
+    font: "Sans Bold 36"
+    color: "#FFFFFF"
+}
++ boot_menu {
+    left: 15%
+    top: 45%
+    width: 70%
+    height: 40%
+    item_color="#CCCCCC"
+    selected_item_color="#FFFFFF"
+    icon_width=32
+    icon_height=32
+    item_font="Sans 16"
+    selected_item_font="Sans Bold 16"
+    item_height=28
+    item_padding=4
+    item_icon_space=20
+    item_spacing=8
+}
++ status {
+    left: 5%
+    bottom: 3%
+    width: 90%
+    height: 25px
+    font = "Sans 12"
+    color = "#888888"
+    text-align = center
+}
+"#;
+
+        std::fs::write(theme_dir.join("theme.txt"), theme_txt)?;
+
+        info!(target: "lmforge_overlay", path = ?theme_dir, "created default GRUB theme");
+        Ok(())
+    }
+
     fn sync_hooks(&self, config_dir: &Path) -> Result<()> {
         let workspace = self.workspace.as_ref()
             .ok_or_else(|| anyhow::anyhow!("WorkspaceLayout not available"))?;
@@ -371,7 +418,7 @@ BUG_REPORT_URL="https://bugs.lingmo.org"
             ("hooks/binary", "binary"),
         ];
 
-        for (source_rel, hook_type) in &hook_types {
+        for (source_rel, _hook_type) in &hook_types {
             let hooks_source = workspace.overlay.join(source_rel);
             let hooks_dest = config_dir.join("hooks");
 
@@ -384,15 +431,15 @@ BUG_REPORT_URL="https://bugs.lingmo.org"
             for entry in std::fs::read_dir(&hooks_source)? {
                 let entry = entry?;
                 let source_path = entry.path();
-                
+
                 if source_path.is_file() {
                     let filename = source_path.file_name()
                         .context("Invalid hook filename")?
                         .to_string_lossy()
                         .to_string();
-                    
+
                     let dest_path = hooks_dest.join(&filename);
-                    
+
                     std::fs::copy(&source_path, &dest_path)
                         .with_context(|| format!("Failed to copy hook {:?} to {:?}", source_path, dest_path))?;
 
@@ -408,7 +455,6 @@ BUG_REPORT_URL="https://bugs.lingmo.org"
 
                     debug!(
                         target: "lmforge_overlay",
-                        hook_type = hook_type,
                         hook_name = %filename,
                         "installed hook script"
                     );
@@ -422,12 +468,12 @@ BUG_REPORT_URL="https://bugs.lingmo.org"
                     .context("Invalid custom hook filename")?
                     .to_string_lossy()
                     .to_string();
-                
+
                 let hooks_dest = config_dir.join("hooks");
                 std::fs::create_dir_all(&hooks_dest)?;
-                
+
                 let dest_path = hooks_dest.join(&filename);
-                
+
                 std::fs::copy(custom_hook, &dest_path)
                     .with_context(|| format!("Failed to copy custom hook {:?} to {:?}", custom_hook, dest_path))?;
 
@@ -473,9 +519,9 @@ LB_BOOTLOADER="grub-efi"
 LB_CHROOT_FILESYSTEM="squashfs"
 LB_BINARY_FILESYSTEM="fat32"
 
-LB_APPLICATION_TITLE="Lingmo Linux"
-LB_ISO_NAME="lingmo-linux-live"
-LB_ISO_VOLUME="Lingmo Linux Live {version}"
+LB_APPLICATION_TITLE="Lingmo OS"
+LB_ISO_NAME="lingmo-os"
+LB_ISO_VOLUME="Lingmo OS Live {version}"
 
 echo ">>> [lmforge] Configuration loaded for {suite} ({arch}) <<<"
 "#,

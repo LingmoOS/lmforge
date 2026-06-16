@@ -49,6 +49,7 @@ pub struct PartialConfig {
     pub platform: Option<PartialPlatformConfig>,
     pub image: Option<PartialImageConfig>,
     pub logging: Option<PartialLoggingConfig>,
+    pub repositories: Option<Vec<RepositoryDefinition>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -95,26 +96,7 @@ impl RepositoryDefinition {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PartialConfig {
-    pub arch: Option<String>,
-    pub suite: Option<String>,
-    pub version: Option<String>,
-    pub output_dir: Option<PathBuf>,
-    pub workspace_dir: Option<PathBuf>,
-    pub features: Option<Vec<String>>,
-    pub platform: Option<PartialPlatformConfig>,
-    pub image: Option<PartialImageConfig>,
-    pub logging: Option<PartialLoggingConfig>,
-    pub repositories: Option<Vec<RepositoryDefinition>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PartialLoggingConfig {
-    pub level: Option<u8>,
-}
-
-struct ConfigLoader {
+pub struct ConfigLoader {
     layers: Vec<ConfigLayer>,
 }
 

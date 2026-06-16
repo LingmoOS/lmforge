@@ -42,8 +42,8 @@ impl DesktopFeature {
                 "sddm",
             ],
             "xfce" => vec![
-                "xfce4",
-                "xfce4-terminal",
+                "",
+                "",
                 "lightdm",
             ],
             _ => vec![],

@@ -17,5 +17,5 @@ volume_id = "Lingmo Live AMD64"
 name = "lingmoos-obs"
 uri = "https://download.opensuse.org/repositories/home:/LingmoOS/Debian_13/"
 suite = "./"
-signed_by = "/etc/apt/keyrings/lingmoos-obs.gpg"
+signed_by = "/etc/apt/keyrings/lingmo.gpg"
 enabled = true

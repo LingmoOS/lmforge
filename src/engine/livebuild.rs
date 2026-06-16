@@ -119,6 +119,7 @@ LB_ARCHIVE_AREAS="{components}"
 LB_PARENT_ARCHIVE_AREAS="{components}"
 
 LB_BOOTLOADER="grub-efi"
+LB_GRUB_THEME="/boot/grub/theme/theme.txt"
 LB_CHROOT_FILESYSTEM="squashfs"
 LB_BINARY_FILESYSTEM="fat32"
 LB_BINARY_IMAGES="iso"
@@ -132,6 +133,7 @@ LB_MIRROR_BOOTSTRAP="https://mirrors.tuna.tsinghua.edu.cn/debian"
 LB_MIRROR_BINARY="https://mirrors.tuna.tsinghua.edu.cn/debian"
 LB_MIRROR_CHROOT="https://mirrors.tuna.tsinghua.edu.cn/debian"
 LB_MIRROR_CHROOT_SECURITY="https://mirrors.tuna.tsinghua.edu.cn/debian-security"
+LB_MIRROR_BINARY_SECURITY="https://mirrors.tuna.tsinghua.edu.cn/debian-security"
 "#,
             arch = ctx.arch(),
             suite = ctx.suite(),
@@ -157,13 +159,14 @@ linux-image-amd64
 live-boot
 systemd-sysv
 
-# Desktop environment (if enabled)
-task-xfce-desktop
-
 # Network tools
 network-manager
 wpasupplicant
 wireless-tools
+
+# Window System
+kwin-x11
+kwin-wayland
 
 # Filesystems support
 dosfstools
@@ -361,7 +364,7 @@ echo "Post-build hook completed"
             {
                 let rt = tokio::runtime::Runtime::new()?;
                 let _bytes_copied = rt.block_on(async move {
-                    tokio::fs::copy(&iso_source_clone, &dest_clone).await
+                    tokio::fs::copy(&iso_path_clone, &dest_clone).await
                 })?;
             }
 
@@ -443,9 +446,8 @@ impl ImageEngine for LiveBuildEngine {
 
         let lb_config = self.get_lb_config_dir(ctx);
 
-        info!(target: "lmforge_livebuild", config_dir = ?lb_config, "running lb build (timeout: 3600s)");
-
-        let output = self.run_lb_command("build", &[], &lb_config, 3600)?;
+        info!(target: "lmforge_livebuild", config_dir = ?lb_config, "running lb build (timeout: 14400s)");
+        let output = self.run_lb_command("build", &[], &lb_config, 14400)?;
 
         info!(target: "lmforge_livebuild", output_len = output.len(), "lb build completed successfully");
 
